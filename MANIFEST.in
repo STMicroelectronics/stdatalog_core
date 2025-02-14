@@ -1,0 +1,11 @@
+include stdatalog_core/LICENSE.*
+include stdatalog_core/HSD_link/communication/libhs_datalog/32bit/*
+include stdatalog_core/HSD_link/communication/libhs_datalog/64bit/*
+include stdatalog_core/HSD_link/communication/libhs_datalog/linux/*
+include stdatalog_core/HSD_link/communication/libhs_datalog/raspberryPi/*
+include stdatalog_core/HSD_link/communication/libhs_datalog/raspberryPi4_32bit/*
+include stdatalog_core/HSD_link/communication/libhs_datalog/raspberryPi4_64bit/*
+include stdatalog_core/HSD_utils/staiotcraft_dependencies/*
+include stdatalog_core/HSD_utils/staiotcraft_dependencies/p310/*
+include stdatalog_core/HSD_utils/staiotcraft_dependencies/p311/*
+include stdatalog_core/HSD_utils/staiotcraft_dependencies/p312/*

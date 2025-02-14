@@ -1,0 +1,11 @@
+stdatalog_pnpl
+numpy==1.26.4
+pyserial
+pandas
+fastparquet==2024.5.0
+h5py==3.12.1
+colorama
+click
+matplotlib
+setuptools
+plotly
