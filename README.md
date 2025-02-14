@@ -96,7 +96,7 @@ device_info = hsd.get_device_info(hsd_instance)
 
 # --> For other functionalities, please refer to the HSDatalog class documentation
 ```
-You can find the `HSDatalog.py` file **[here](https://github.com/STMicroelectronics/stdatalog_core/blob/main/stdatalog_core/HSD/HSDatalog.py)**. For a complete reference on how to use the `HSDatalog` class, refer to the **[stdatalog_API_examples_HSDatalog.py](https://github.com/STMicroelectronics/stdatalog-pysdk/blob/main/examples/function_tests/stdatalog_API_examples_HSDatalog.py)** example or to the **[nb_stdatalog_core.ipynb](https://github.com/STMicroelectronics/stdatalog-pysdk/blob/main/examples/how-to_notebooks/nb_stdatalog_core.ipynb)** Jupyter Notebook in the STDATALOG-PYSDK examples folder.
+You can find the `HSDatalog.py` file **[here](https://github.com/STMicroelectronics/stdatalog_core/blob/main/stdatalog_core/HSD/HSDatalog.py)**. For a complete reference on how to use the `HSDatalog` class, refer to the **[stdatalog_API_examples_HSDatalog.py](https://github.com/STMicroelectronics/stdatalog_examples/blob/main/function_tests/stdatalog_API_examples_HSDatalog.py)** example or to the **[nb_stdatalog_core.ipynb](https://github.com/STMicroelectronics/stdatalog_examples/blob/main/how-to_notebooks/nb_stdatalog_core.ipynb)** Jupyter Notebook in the STDATALOG-PYSDK examples folder.
 
 ### How to use HSDLink class:
 NOTE: It is necessary to connect a compatible device (board flashed with FP-SNS-DATALOG2 or FP-IND-DATALOGMC) to the PC to run the script.
@@ -121,7 +121,7 @@ version = hsd_link.get_version(hsd_link_instance)
 
 # --> For other functionalities, please refer to the HSDLink class documentation
 ```
-You can find the `HSDLink.py` file **[here](https://github.com/STMicroelectronics/stdatalog_core/blob/main/stdatalog_core/HSD_link/HSDLink.py)**. For a complete reference on how to use the `HSDLink` class, refer to the **[stdatalog_API_examples_HSDLink.py](https://github.com/STMicroelectronics/stdatalog-pysdk/blob/main/examples/function_tests/stdatalog_API_examples_HSDLink.py)** example or to the **[nb_stdatalog_communication.ipynb](https://github.com/STMicroelectronics/stdatalog-pysdk/blob/main/examples/how-to_notebooks/nb_stdatalog_communication.ipynb)** Jupyter Notebook in the STDATALOG-PYSDK examples folder.
+You can find the `HSDLink.py` file **[here](https://github.com/STMicroelectronics/stdatalog_core/blob/main/stdatalog_core/HSD_link/HSDLink.py)**. For a complete reference on how to use the `HSDLink` class, refer to the **[stdatalog_API_examples_HSDLink.py](https://github.com/STMicroelectronics/stdatalog_examples/blob/main/function_tests/stdatalog_API_examples_HSDLink.py)** example or to the **[nb_stdatalog_communication.ipynb](https://github.com/STMicroelectronics/stdatalog_examples/blob/main/how-to_notebooks/nb_stdatalog_communication.ipynb)** Jupyter Notebook in the STDATALOG-PYSDK examples folder.
 
 ## License
 This software is licensed under the BSD 3-clause license. See the LICENSE.md file for more details.
