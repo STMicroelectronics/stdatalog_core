@@ -39,13 +39,20 @@ The package is compatible with Windows and Linux, and supports Python 3.10 to 3.
 
 ## Installation
 
-To install the `stdatalog_core` package, use the following command:
+To install the `stdatalog_core` package after downloading it, execute the following command from the package's root directory:
+NOTE: Be sure to satisfy the requirements before installing the package ([see Requirements](#requirements)).
 
+On Windows:
 ```sh
-pip install stdatalog_core
+python -m pip install dist\stdatalog_core-1.0.0-py3-none-any.whl
 ```
 
-The package could also be installed as part of the **STDATALOG-PYSDK** by launching the SDK installation script from the SDK root folder:
+On Linux:
+```sh
+python3 -m pip install dist/stdatalog_core-1.0.0-py3-none-any.whl
+```
+
+The package could also be installed as part of the **[STDATALOG-PYSDK](https://github.com/STMicroelectronics/stdatalog-pysdk)** by launching the SDK installation script from the SDK root folder:
 
 On Windows:
 ```sh
@@ -56,6 +63,8 @@ On Linux:
 ```sh
 ./STDATALOG-PYSDK_install.sh
 ```
+
+Source code is also available within the inner `stdatalog_core` folder.
 
 ## Requirements
 The package requires the following dependencies:
