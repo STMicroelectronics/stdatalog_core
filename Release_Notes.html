@@ -32,9 +32,29 @@
 <div class="col-sm-12 col-lg-8">
 <h1 id="update-history">Update History</h1>
 <div class="collapse">
-<input type="checkbox" id="collapse-section1" checked aria-hidden="true"> <label for="collapse-section1" aria-hidden="true">v1.0.0 / 17-Jan-25</label>
+<input type="checkbox" id="collapse-section2" checked aria-hidden="true"> <label for="collapse-section2" aria-hidden="true">v1.1.0 / 9-Apr-25</label>
 <div>
 <h2 id="main-changes">Main Changes</h2>
+<h3 id="maintenance-release">Maintenance Release</h3>
+<ul>
+<li><strong>Added macos support.</strong></li>
+<li><strong>Updated libhs_datalog_v2 libraries for all the supported OS.</strong>
+<ul>
+<li>Updated libusb linking and added missing lirbary import for UNIX.</li>
+<li>Added a new logging system to manage application messages with different levels (NONE, ERROR, WARNING, INFO, DEBUG).</li>
+<li>Updated cmake_minimum_required version used to recompile libraries.</li>
+<li>Added new hs_datalog_load_ucf_file_to_mlc API (deprecated old hs_datalog_load_ucf_to_mlc API).</li>
+</ul></li>
+<li>Added hs_datalog_close error message.</li>
+<li>Added support for Vanilla and serial datalogger.</li>
+<li>Updated return values for last_index, missing_bytes and saved_bytes when returning from__extract_data in case of EOF and fixed missing len(df) check.</li>
+</ul>
+</div>
+</div>
+<div class="collapse">
+<input type="checkbox" id="collapse-section1" aria-hidden="true"> <label for="collapse-section1" aria-hidden="true">v1.0.0 / 17-Jan-25</label>
+<div>
+<h2 id="main-changes-1">Main Changes</h2>
 <h3 id="first-official-release">First official release</h3>
 </div>
 </div>

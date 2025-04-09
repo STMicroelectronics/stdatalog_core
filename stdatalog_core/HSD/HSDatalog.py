@@ -1419,7 +1419,7 @@ class HSDatalog:
     @staticmethod
     def __convert_to_xsv_batch(hsd, comp_name, comp_status, start_time, end_time, labeled, raw_data, output_folder, file_format, which_tags:list = [], no_timestamps = False, chunk_size = DEFAULT_SAMPLES_CHUNK_SIZE):
         """
-        Converts sensor data to a specified file format (TXT, CSV, TSV, PARQUET, HDF5) in batches.
+        Converts sensor data to a specified file format (TXT, CSV, TSV, PARQUET) in batches.
 
         :param hsd: An instance of HSDatalog
         :param comp_name: The name of the component.
@@ -1429,7 +1429,7 @@ class HSDatalog:
         :param labeled: Boolean to choose whether the output should contain information about labels (Input data must be labelled).
         :param raw_data: Boolean to get raw data output (not multiplied by sensitivity).
         :param output_folder: The folder where the output files will be saved.
-        :param file_format: The desired output file format ('TXT', 'CSV', 'TSV', 'PARQUET', 'HDF5').
+        :param file_format: The desired output file format ('TXT', 'CSV', 'TSV', 'PARQUET').
         :param which_tags: [Optional] List of tags labels to be included into exported file.
         :param no_timestamps: [Optional] Boolean to decide whether to exclude timestamps from the output (if true, then no Time columns in exported file).
         :param chunk_size: [Optional] The size of the data chunk (in samples) to be processed at a time. Default value = HSDatalog.DEFAULT_SAMPLES_CHUNK_SIZE = 10M Samples
@@ -1484,7 +1484,7 @@ class HSDatalog:
                 is_last_chunk = True
                 log.info("--> Conversion completed")
 
-            if df is not None:
+            if df is not None and len(df) > 0:
                 # Check if this is the last chunk based on the end time and the last timestamp in the dataframe.
                 if end_time != -1 and df.iloc[-1,0] >= end_time:
                     is_last_chunk = True
@@ -1504,8 +1504,6 @@ class HSDatalog:
                     HSDatalogConverter.to_tsv(df, sensor_file_path, mode=file_mode)
                 elif file_format == 'PARQUET':
                     HSDatalogConverter.to_parquet(df, sensor_file_path, mode=file_mode)
-                elif file_format == 'HDF5':
-                    HSDatalogConverter.to_hdf5(df, sensor_file_path, mode=file_mode)
                 log.debug(f"df to {file_format} COMPLETED!")
 
                 # If the dataframe is empty, mark the last chunk and log completion.
@@ -1520,7 +1518,7 @@ class HSDatalog:
                     # Calculate the end time for the next chunk.
                     next_end_time = next_start_time + chunk_time_size
             else:
-                # If no data frame is returned, mark the last chunk.
+                # If no data frame or empty dataframe is returned, mark the last chunk.
                 # This could happen if there is no more data to process or if an error occurred.
                 is_last_chunk = True
                 log.info("--> Conversion completed")
@@ -1531,7 +1529,7 @@ class HSDatalog:
     @staticmethod
     def convert_dat_to_xsv(hsd, component, start_time, end_time, labeled, raw_data, output_folder, file_format, which_tags:list = [], no_timestamps = False, chunk_size = DEFAULT_SAMPLES_CHUNK_SIZE):
         """
-        Converts data from .dat format to a specified file format (TXT, CSV, TSV, Apache PARQUET, HDF5) for a given component.
+        Converts data from .dat format to a specified file format (TXT, CSV, TSV, Apache PARQUET) for a given component.
 
         :param hsd: An instance of HSDatalog.
         :param component: A dictionary where the key is the component name and the value is its status.
@@ -1540,7 +1538,7 @@ class HSDatalog:
         :param labeled: Boolean to choose whether the output should contain information about labels (Input data must be labelled).
         :param raw_data: Boolean indicating whether to output raw data (not multiplied by sensitivity).
         :param output_folder: The directory where the converted files will be saved.
-        :param file_format: The desired output file format ('TXT', 'CSV', 'TSV', 'PARQUET', 'HDF5').
+        :param file_format: The desired output file format ('TXT', 'CSV', 'TSV', 'PARQUET').
         :param which_tags: [Optional] List of tags labels to be included into exported file.
         :param no_timestamps: [Optional] Boolean to decide whether to exclude timestamps from the output (if true, then no Time columns in exported file).
         :param chunk_size: [Optional] The size of the data chunk (in samples) to be processed at a time. Default value = HSDatalog.DEFAULT_SAMPLES_CHUNK_SIZE = 10M Samples

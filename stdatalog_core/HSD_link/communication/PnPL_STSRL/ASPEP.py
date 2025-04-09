@@ -10,6 +10,7 @@ class ASPEPType(Enum):
     Response = 2
     Ping = 6
     Error = 7
+    Invalid = 0
 
 class ASPEPInnerHeader(ABC):
     pass
@@ -244,6 +245,9 @@ class ASPEP:
             elif p_type == ASPEPType.Response:
                 inner_header = ASPEPResponseHeader(payload_length)
             aspep_payload = ser.read(payload_length)
+        elif p_type == ASPEPType.Invalid:
+            print("ERROR: Invalid ASPEP packet type")
+            return
         crch = (header[3] >> 4) & 0b1111
         aspep_header = ASPEPHeader(p_type, parity, inner_header, crch)
         aspep_packet = ASPEPPacket(aspep_header, aspep_payload)

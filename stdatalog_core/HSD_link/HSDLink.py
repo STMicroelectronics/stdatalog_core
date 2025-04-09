@@ -120,47 +120,67 @@ class HSDLink:
         """
         self.dev_com_type = dev_com_type
         self.acquisition_folder = acquisition_folder
-        self.is_datalog2 = False
+        self.is_datalog1 = False
+        self.is_vdatalog = False
         
         if dev_com_type == 'st_hsd':
+            try:
+                hsd_link = HSDLink_v2(self.dev_com_type, self.acquisition_folder, plug_callback, unplug_callback)
+                if hsd_link.nof_connected_devices == 0:
+                    log.warning("No HSDatalog_v2 devices connected!")
+                    self.is_vdatalog = True
+                else:
+                    print(f"{logger.get_datetime()} - HSDatalogApp.{__name__} - INFO - Commmunication Opened correctly")
+                    return hsd_link
+            except CommunicationEngineOpenError:
+                log.error("Error opening communication using libhs_datalog_v2...")
+                self.is_vdatalog = True
+
+            # time.sleep(2)
+
+            try:
+                hsd_link = HSDLink_v2_Serial("st_serial_datalog", self.acquisition_folder)
+                self.dev_com_type = "st_serial_datalog"
+                if hsd_link.nof_connected_devices == 0:
+                    log.warning("No Vanilla Datalog devices connected!")
+                    self.is_datalog1 = True
+                    self.is_vdatalog = False
+                else:
+                    print(f"{logger.get_datetime()} - HSDatalogApp.{__name__} - INFO - Commmunication Opened correctly")
+                    return hsd_link
+            except CommunicationEngineOpenError:
+                log.error("Error opening communication using vanilla datalog protocol...")
+                self.is_datalog1 = True
+                self.is_vdatalog = False
+                
+            # time.sleep(2)
+
             try:
                 hsd_link = HSDLink_v1(self.dev_com_type, self.acquisition_folder)
                 if hsd_link.nof_connected_devices == 0:
                     log.warning("No HSDatalog_v1 devices connected!")
-                    self.is_datalog2 = True
+                    return None
                 else:
-                    print("{} - HSDatalogApp.{} - INFO - Commmunication Opened correctly".format(logger.get_datetime(), __name__))
+                    print(f"{logger.get_datetime()} - HSDatalogApp.{__name__} - INFO - Commmunication Opened correctly")
+                    return hsd_link
             except CommunicationEngineOpenError:
                 log.error("Error opening communication using libhs_datalog_v1...")
-                self.is_datalog2 = True
-
-            time.sleep(2)
-
-            if self.is_datalog2:
-                print("{} - HSDatalogApp.{} - INFO - Trying to open communication using libhs_datalog_v2...".format(logger.get_datetime(), __name__))
-                # if self.dev_com_type == "st_hsd":
-                #     self.dev_com_type = "pnpl"
-                try:
-                    hsd_link = HSDLink_v2(self.dev_com_type, self.acquisition_folder, plug_callback, unplug_callback)
-                    if hsd_link.nof_connected_devices == 0:
-                        log.warning("No HSDatalog_v2 devices connected!")
-                        self.is_datalog2 = False
-                        return None
-                    else:
-                        print("{} - HSDatalogApp.{} - INFO - Commmunication Opened correctly".format(logger.get_datetime(), __name__))
-                except CommunicationEngineOpenError:
-                    log.error("Error opening communication using libhs_datalog_v2...")
-                    self.is_datalog2 = False
-                    return None
-        elif dev_com_type == "st_serial_datalog":
-            hsd_link = HSDLink_v2_Serial(self.dev_com_type, self.acquisition_folder)
-            if hsd_link.nof_connected_devices == 0:
-                log.warning("No COM devices connected!")
-                self.is_datalog2 = False
                 return None
-            else:
-                print("{} - HSDatalogApp.{} - INFO - Commmunication Opened correctly".format(logger.get_datetime(), __name__))
-        return hsd_link
+
+        elif dev_com_type == 'st_serial_datalog':
+            try:
+                hsd_link = HSDLink_v2_Serial("st_serial_datalog", self.acquisition_folder)
+                self.dev_com_type = "st_serial_datalog"
+                if hsd_link.nof_connected_devices == 0:
+                    log.warning("No Vanilla Datalog devices connected!")
+                    self.is_datalog1 = True
+                    self.is_vdatalog = False
+                else:
+                    print(f"{logger.get_datetime()} - HSDatalogApp.{__name__} - INFO - Commmunication Opened correctly")
+                    return hsd_link
+            except CommunicationEngineOpenError:
+                log.error("Error opening communication using vanilla datalog protocol...")
+        return None
     
     @staticmethod
     def get_versiontuple(v):

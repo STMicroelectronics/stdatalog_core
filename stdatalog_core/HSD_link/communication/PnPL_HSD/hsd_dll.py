@@ -66,6 +66,12 @@ class HSD_Dll_Wrapper:
             dllabspath = os.path.split(os.path.dirname(os.path.abspath(__file__)))[0] + os.path.sep + os.path.join("libhs_datalog", dll_subfolder)
             os.environ['PATH'] = dllabspath + os.pathsep + os.environ['PATH']
             self._hsd_dll = cdll.LoadLibrary(util.find_library(dll_name))
+        elif platform.system() == 'Darwin':
+            if platform.machine() == 'arm64':
+                dll_name = os.path.split(os.path.dirname(os.path.abspath(__file__)))[0] + "/libhs_datalog/macos/arm64/libhs_datalog_v2.dylib"
+            elif platform.machine() == 'x86_64':
+                dll_name = os.path.split(os.path.dirname(os.path.abspath(__file__)))[0] + "/libhs_datalog/macos/x86_64/libhs_datalog_v2.dylib"
+            self._hsd_dll = cdll.LoadLibrary(dll_name)
 
         callaback_type = ctypes.CFUNCTYPE(None)
 
@@ -362,10 +368,17 @@ class HSD_Dll:
             res = self.hsd_wrapper.hs_datalog_open()
             return res == ST_HS_DATALOG_OK
         except OSError:
+            print("{} - HSDatalogApp.{} - ERROR - Error in opening the HSD device!".format(logger.get_datetime(), __name__))
             return False
 
     def hs_datalog_close(self) -> bool:
-        return self.hsd_wrapper.hs_datalog_close() == ST_HS_DATALOG_OK
+        res = None
+        try:
+            res = self.hsd_wrapper.hs_datalog_close()
+            return res == ST_HS_DATALOG_OK
+        except OSError:
+            print("{} - HSDatalogApp.{} - ERROR - Error in closing the HSD device!".format(logger.get_datetime(), __name__))
+            return False
     
     def __hs_datalog_free(self, ptr) -> bool:
         res = self.hsd_wrapper.hs_datalog_free(ptr)

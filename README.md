@@ -27,12 +27,12 @@ This package is composed of three sub-packages (The acronym HSD stands for High-
     - Extract data from raw interleaved data+timestamp buffers
     - Helper functions for common tasks such as string formatting, date handling, and list management.
 
-The package is compatible with Windows and Linux, and supports Python 3.10 to 3.12.
+The package is compatible with Windows, Linux and macOS, and supports Python 3.10 to 3.12.
 
 ## Features
 
 - High-speed data logging
-- Support for multiple platforms (Windows, Linux)
+- Support for multiple platforms (Windows, Linux, macOS)
 - Compatible with Python 3.10 to 3.12
 - Communication with various hardware devices
 - Data processing, conversion and visualization utilities
@@ -44,12 +44,12 @@ NOTE: Be sure to satisfy the requirements before installing the package ([see Re
 
 On Windows:
 ```sh
-python -m pip install dist\stdatalog_core-1.0.0-py3-none-any.whl
+python -m pip install dist\stdatalog_core-1.1.0-py3-none-any.whl
 ```
 
-On Linux:
+On Linux/macOS:
 ```sh
-python3 -m pip install dist/stdatalog_core-1.0.0-py3-none-any.whl
+python3 -m pip install dist/stdatalog_core-1.1.0-py3-none-any.whl
 ```
 
 The package could also be installed as part of the **[STDATALOG-PYSDK](https://github.com/STMicroelectronics/stdatalog-pysdk)** by launching the SDK installation script from the SDK root folder:
@@ -59,7 +59,7 @@ On Windows:
 .\STDATALOG-PYSDK_install.bat
 ```
 
-On Linux:
+On Linux/macOS:
 ```sh
 ./STDATALOG-PYSDK_install.sh
 ```
@@ -70,15 +70,16 @@ Source code is also available within the inner `stdatalog_core` folder.
 The package requires the following dependencies:
 
 - **[stdatalog_pnpl](https://github.com/STMicroelectronics/stdatalog_pnpl)**
-- numpy==1.26.4
-- pyserial
-- pandas
-- fastparquet==2024.5.0
-- h5py==3.12.1
-- colorama
-- click
-- matplotlib
+- numpy==2.2.4
+- pyserial==3.5
+- pandas==2.2.3
+- fastparquet==2024.11.0
+- h5py==3.13.0
+- colorama==0.4.6
+- click==8.1.8
+- matplotlib==3.10.1
 - setuptools
+- plotly==6.0.1
 
 ## Usage
 Here is a basic example of how to use the stdatalog_core package:

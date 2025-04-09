@@ -41,12 +41,16 @@ class PnPLSTSRL_CommandManager:
 
         self.sstl_manager = None
         self.sstl_packet = None
+        self.sstl_packet_copy = None
 
     def send_pnpl_msg(self, PnPL_msg):
+        if self.sstl_manager is None:
+            log.error("SSTL Manager is not initialized.")
+            return None
         self.sstl_manager.send_command(self.serial_port, PnPL_msg)
         self.serial_semaphore.acquire(timeout=2)
-        print("SEND PnPL Msg UNLOCKED, Response:", self.sstl_packet.data)
-        if self.sstl_packet.data != b'':
+        print("SEND PnPL Msg UNLOCKED, Response:", self.sstl_packet_copy.data)
+        if self.sstl_packet_copy.data != b'':
             return json.loads(self.sstl_packet.data.decode())
         else:
             return None
@@ -64,6 +68,10 @@ class PnPLSTSRL_CommandManager:
                 elif cr == 2:
                     # response
                     self.serial_semaphore.release()
+                    # in case of sync packets, we need to make a copy of the received packet to avoid that the next "receive_bytes" call overwrites it
+                    # NOTE: this mechanism works only if the payload is fully contained in a single packet. Problem: If the payload is split in multiple packets, the copy will contain only the last packet
+                    # TODO: implement a mechanism to handle multi-packet payloads
+                    self.sstl_packet_copy = self.sstl_packet
                     return self.sstl_packet
                 elif cr == 3:
                     # async property change
@@ -87,8 +95,11 @@ class PnPLSTSRL_CommandManager:
         return self.serial_port.is_open
 
     def close(self):
-        # Close the serial connection
-        self.serial_port.close()
+        if self.serial_port:
+            # Close the serial connection
+            self.serial_port.close()
+        else:
+            log.error("Serial port not opened. Cannot close it.")
 
     #TODO filter only compatible devices
     def get_nof_devices(self):
@@ -138,14 +149,8 @@ class PnPLSTSRL_CommandManager:
         return True
 
     def get_devices(self):
-        nof_devices = self.get_nof_devices()
-        if nof_devices is not None:
-            dev_list=[]
-            for i in range(0,nof_devices):
-                device = self.get_device_status(i)
-                dev_list.append(device)
-            return dev_list
-        return None
+        ports = list_ports.comports()
+        return ports
 
     def get_device_status(self, d_id: int):
         res = self.send_pnpl_msg(PnPLCMDManager.create_get_device_status_cmd())

@@ -52,24 +52,27 @@ class SSTL:
     def receive(self,ser):
         response = self.aspep_manager.receive_bytes(ser)
         sstl_packet = None
-        if response.header.p_type == ASPEPType.Data or \
-            response.header.p_type == ASPEPType.Async or \
-            response.header.p_type == ASPEPType.Response:
-            # extract the vv value from the response header
-            vv = response.data[0] & 0b11
-            # extract the rrr value from the response header
-            rrr = (response.data[0] >> 2) & 0b111
-            # extract the cr value from the response header
-            cr = response.data[0] >> 5
-            # extract the fin value from the response header
-            fin = response.data[1] & 0b1
-            # extract the ch_num value from the response header
-            ch_num = response.data[1] >> 1
-            # extract sequence value from the response header by combining response[3] and response[2] into a single value
-            sequence_num = (response.data[3] << 8) | response.data[2]
-            sstl_header = SSTLHeader(vv, rrr, cr, fin, ch_num, sequence_num)
-            data = response.data[SSTL.HEADER_SIZE:]
-            if len(data) == 0:
-                print("SSTL packect received with empty data")
-            sstl_packet = SSTLPacket(sstl_header, data[:-1] if cr != 0 else data) #TODO why [-1] in commands?
+        if response is not None and len(response.data) > 0:
+            if response.header.p_type == ASPEPType.Data or \
+                response.header.p_type == ASPEPType.Async or \
+                response.header.p_type == ASPEPType.Response:
+                # extract the vv value from the response header
+                vv = response.data[0] & 0b11
+                # extract the rrr value from the response header
+                rrr = (response.data[0] >> 2) & 0b111
+                # extract the cr value from the response header
+                cr = response.data[0] >> 5
+                # extract the fin value from the response header
+                fin = response.data[1] & 0b1
+                # extract the ch_num value from the response header
+                ch_num = response.data[1] >> 1
+                # extract sequence value from the response header by combining response[3] and response[2] into a single value
+                sequence_num = (response.data[3] << 8) | response.data[2]
+                sstl_header = SSTLHeader(vv, rrr, cr, fin, ch_num, sequence_num)
+                data = response.data[SSTL.HEADER_SIZE:]
+                if len(data) == 0:
+                    print("SSTL packect received with empty data")
+                sstl_packet = SSTLPacket(sstl_header, data[:-1] if cr != 0 else data) #TODO why [-1] in commands?
+            else:
+                print("Received packet is not a data packet")
         return sstl_packet

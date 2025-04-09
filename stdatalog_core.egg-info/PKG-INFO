@@ -1,6 +1,6 @@
-Metadata-Version: 2.1
+Metadata-Version: 2.2
 Name: stdatalog_core
-Version: 1.0.0
+Version: 1.1.0
 Summary: STMicroelectronics High Speed Datalog python package
 Home-page: https://github.com/STMicroelectronics/stdatalog_core
 Author: SRA-ASP
@@ -17,16 +17,25 @@ Classifier: Topic :: Software Development :: Embedded Systems
 Description-Content-Type: text\markdown
 License-File: LICENSE.md
 Requires-Dist: stdatalog_pnpl
-Requires-Dist: numpy==1.26.4
-Requires-Dist: pyserial
-Requires-Dist: pandas
-Requires-Dist: fastparquet==2024.5.0
-Requires-Dist: h5py==3.12.1
-Requires-Dist: colorama
-Requires-Dist: click
-Requires-Dist: matplotlib
+Requires-Dist: numpy==2.2.4
+Requires-Dist: pyserial==3.5
+Requires-Dist: pandas==2.2.3
+Requires-Dist: fastparquet==2024.11.0
+Requires-Dist: h5py==3.13.0
+Requires-Dist: colorama==0.4.6
+Requires-Dist: click==8.1.8
+Requires-Dist: matplotlib==3.10.1
 Requires-Dist: setuptools
-Requires-Dist: plotly
+Requires-Dist: plotly==6.0.1
+Dynamic: author
+Dynamic: author-email
+Dynamic: classifier
+Dynamic: description
+Dynamic: description-content-type
+Dynamic: home-page
+Dynamic: license
+Dynamic: requires-dist
+Dynamic: summary
 
 Copyright (c) 2022 STMicroelectronics.
 All rights reserved.

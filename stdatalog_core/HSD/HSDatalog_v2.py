@@ -968,6 +968,9 @@ class HSDatalog_v2:
                         log.debug(f"missing_bytes: {missing_bytes}")
                         log.debug(f"file_index: {file_index}")
                         if (file_index >= file_size):
+                            comp_status["missing_bytes"] = byte_chest_index
+                            comp_status["saved_bytes"] = raw_data_array_index
+                            comp_status["last_index"] = file_index
                             break # EOF - No enough (cmplt_pkt_size) data to read! Extraction algorithm ends here
                         f.seek(file_index)
                         if last_index != 0:

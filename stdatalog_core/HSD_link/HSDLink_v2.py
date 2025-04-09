@@ -17,6 +17,7 @@
 
 import os
 import json
+import time
 from datetime import datetime
 
 from stdatalog_core.HSD_utils.exceptions import InvalidCommandSetError, NoDeviceConnectedError
@@ -34,11 +35,12 @@ class HSDLink_v2:
 
     __com_manager = None
     __base_acquisition_folder = None
-    __acquisition_folder = None
+    # __acquisition_folder = None
     
     def __init__(self, dev_com_type: str = 'st_hsd', acquisition_folder = None, plug_callback = None, unplug_callback = None):
         self.__create_com_manager(dev_com_type, plug_callback, unplug_callback)
         
+        self.acquisition_folder = None
         self.sensor_data_counts = {}
         self.nof_connected_devices = 0
         self.save_files = True
@@ -63,10 +65,12 @@ class HSDLink_v2:
     def set_device_template(self, dev_template_json: dict):
         self.__dt_manager = DeviceTemplateManager(dev_template_json)
 
-    def open(self):
-        return self.__com_manager.open()
+    # def open(self):
+    #     return self.__com_manager.open()
     
-    def open(self, com_id, com_speed):
+    def open(self, com_id=None, com_speed=None):
+        if com_id is None or com_speed is None:
+            return self.__com_manager.open()
         return self.__com_manager.open(com_id, com_speed)
     
     def close(self):
@@ -98,9 +102,9 @@ class HSDLink_v2:
         return self.__com_manager.get_cmd_set_presentation_string()
 
     def get_acquisition_folder(self):
-        if self.__acquisition_folder is None:
+        if self.acquisition_folder is None:
             return self.__base_acquisition_folder
-        return self.__acquisition_folder
+        return self.acquisition_folder
 
     def get_nof_devices(self):
         return self.__com_manager.get_nof_devices()
@@ -361,12 +365,12 @@ class HSDLink_v2:
         if acq_folder is not None:
             self.update_base_acquisition_folder(acq_folder)
         if sub_folder == True:
-            self.__acquisition_folder = os.path.join(self.__base_acquisition_folder, "{}".format(datetime.today().strftime('%Y%m%d_%H_%M_%S')))
+            self.acquisition_folder = os.path.join(self.__base_acquisition_folder, "{}".format(datetime.today().strftime('%Y%m%d_%H_%M_%S')))
         else:
-            self.__acquisition_folder = self.__base_acquisition_folder
+            self.acquisition_folder = self.__base_acquisition_folder
                 
-        if self.save_files and not os.path.exists(self.__acquisition_folder):
-            os.makedirs(self.__acquisition_folder)
+        if self.save_files and not os.path.exists(self.acquisition_folder):
+            os.makedirs(self.acquisition_folder)
         return self.__com_manager.start_log(d_id, interface)
     
     def switch_bank(self, d_id:int):
@@ -383,7 +387,7 @@ class HSDLink_v2:
     
     def save_json_device_file(self, d_id: int, out_acq_path = None):
         if self.save_files:
-            json_save_path = self.__acquisition_folder
+            json_save_path = self.acquisition_folder
             if out_acq_path is not None:
                 if not os.path.exists(out_acq_path):
                     os.makedirs(out_acq_path)
@@ -407,7 +411,7 @@ class HSDLink_v2:
     
     def save_json_acq_info_file(self, d_id: int, out_acq_path = None, manual_tags = None):
         if self.save_files:
-            json_save_path = self.__acquisition_folder
+            json_save_path = self.acquisition_folder
             if out_acq_path is not None:
                 if not os.path.exists(out_acq_path):
                     os.makedirs(out_acq_path)
@@ -520,7 +524,7 @@ class HSDLink_v2:
         return res
 
 class HSDLink_v2_Serial(HSDLink_v2):
-    
+
     def __init__(self, dev_com_type: str = 'st_serial_datalog', acquisition_folder=None, plug_callback=None, unplug_callback=None):
         super().__init__(dev_com_type, acquisition_folder, plug_callback, unplug_callback)
         self.__com_manager = self.get_com_manager()
@@ -532,9 +536,18 @@ class HSDLink_v2_Serial(HSDLink_v2):
             time = now.strftime("%Y%m%d_%H_%M_%S")
         message = PnPLCMDManager.create_command_cmd("log_controller","set_time","datetime", time if dtime is None else dtime)
         return self.send_command(d_id, message)
+    
+    def get_devices(self):
+        return self.__com_manager.get_devices()
 
     def send_command(self, d_id:int, message):
         return self.__com_manager.send_pnpl_msg(message)
+    
+    def stop_log(self, d_id):
+        ret = super().stop_log(d_id)
+        time.sleep(1)
+        self.flush()
+        return ret
     
     def get_serial_data(self):
         return self.__com_manager.get_serial_data()
