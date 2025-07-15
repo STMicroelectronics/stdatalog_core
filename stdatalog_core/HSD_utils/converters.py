@@ -167,10 +167,12 @@ class HSDatalogConverter:
         parquet_file_path = filename + ".parquet"
         if mode == 'a':
             # Append to the existing Parquet file
-            df.to_parquet(parquet_file_path, engine='fastparquet', append=True)
+            # df.to_parquet(parquet_file_path, index=False, row_group_size=10**6)
+            df.to_parquet(parquet_file_path, index=False)
         else:
             # Write a new Parquet file
-            df.to_parquet(parquet_file_path, engine='fastparquet')
+            # df.to_parquet(parquet_file_path, index=False, row_group_size=10**6)
+            df.to_parquet(parquet_file_path, index=False)
         log.debug(f"--> File: \"{parquet_file_path}\" converted chunk appended successfully")
 
     @staticmethod

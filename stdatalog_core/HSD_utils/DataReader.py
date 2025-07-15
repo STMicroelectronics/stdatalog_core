@@ -17,6 +17,8 @@ import math
 import struct
 import numpy as np
 
+from stdatalog_core.HSD.utils.type_conversion import TypeConversion
+
 from .DataClass import DataClass
 
 class DataReader(object):
@@ -75,7 +77,11 @@ class DataReader(object):
             # update the data_samples_counter
             self.data_samples_counter = int(data_samples)
             # copy data into buffer
-            self.data_buffer = np.frombuffer(data[:int_rem_data_bytes], dtype=self.data_format, count=int(data_samples))
+            if self.sample_size == 3:
+                a = TypeConversion.int24_buffer_to_int32_buffer(data[:int_rem_data_bytes])
+                self.data_buffer = np.frombuffer(a, dtype=self.data_format, count=int(data_samples))
+            else:
+                self.data_buffer = np.frombuffer(data[:int_rem_data_bytes], dtype=self.data_format, count=int(data_samples))
             # take the remaining bytes, if any (e.g., if data finish with a non complete sample (x,y,) z missing)
             self.rem_dim_bytes = data[int_rem_data_bytes:]
             # update data_samples_counter (remain the same) and timestamp flag (to False)
@@ -97,8 +103,13 @@ class DataReader(object):
             else:
                 format = "=" + str(n_cplt_packet * (str(str(self.dimensions) + self.data_format)))
             # unpack data from the byte raw data buffer
-            data_t = data[: n_cplt_packet * (self.data_size + self.time_size)]
-            self.data_buffer = list(struct.unpack(format, data_t))
+            # copy data into buffer
+            if self.sample_size == 3:
+                data_t = TypeConversion.int24_buffer_to_int32_buffer(data[: n_cplt_packet * (self.data_size + self.time_size)])
+                self.data_buffer = list(struct.unpack(format, data_t))
+            else:
+                data_t = data[: n_cplt_packet * (self.data_size + self.time_size)]
+                self.data_buffer = list(struct.unpack(format, data_t))
             # remove timestamps extracted
             if self.samples_per_ts != 0:
                 del self.data_buffer[(self.samples_per_ts * self.dimensions) :: (self.samples_per_ts * self.dimensions) + 1]
@@ -119,7 +130,11 @@ class DataReader(object):
             # update the data_samples_counter
             self.data_samples_counter = int(data_samples)
             # add remaining extracted data into the data_buffer
-            self.data_buffer.extend(np.frombuffer(data[n_cplt_packet * (self.data_size + self.time_size) : n_cplt_packet * (self.data_size + self.time_size) + int_rem_data_bytes], dtype=self.data_format, count=self.data_samples_counter))
+            if self.sample_size == 3:
+                a = TypeConversion.int24_buffer_to_int32_buffer(data[n_cplt_packet * (self.data_size + self.time_size) : n_cplt_packet * (self.data_size + self.time_size) + int_rem_data_bytes])
+                self.data_buffer.extend(np.frombuffer(a,dtype=self.data_format, count=self.data_samples_counter))
+            else:
+                self.data_buffer.extend(np.frombuffer(data[n_cplt_packet * (self.data_size + self.time_size) : n_cplt_packet * (self.data_size + self.time_size) + int_rem_data_bytes], dtype=self.data_format, count=self.data_samples_counter))
             # cast self.data_buffer to be a numpy array
             self.data_buffer = np.array(self.data_buffer)
             # take the remaining bytes, if any (e.g., if data finish with a non complete sample (x,y,) z missing)
@@ -157,14 +172,22 @@ class DataReader(object):
                     # calculate the right amount of data to extract
                     [int_rem_data_bytes, data_samples] = self.calculate_data_to_extract(data.data)
                     # copy data into buffer
-                    self.data_buffer = np.frombuffer(data.data[:int_rem_data_bytes], dtype=self.data_format, count=int(int_rem_data_bytes / self.sample_size))
+                    if self.sample_size == 3:
+                        a = TypeConversion.int24_buffer_to_int32_buffer(data.data[:int_rem_data_bytes])
+                        self.data_buffer = np.frombuffer(a, dtype=self.data_format, count=int(int_rem_data_bytes / self.sample_size))
+                    else:
+                        self.data_buffer = np.frombuffer(data.data[:int_rem_data_bytes], dtype=self.data_format, count=int(int_rem_data_bytes / self.sample_size))
                     # update the data_samples_counter
                     self.data_samples_counter += int(data_samples)
                     # take the remaining bytes, if any (e.g., if data finish with a non complete sample (x,y,) z missing)
                     self.rem_dim_bytes = data.data[int_rem_data_bytes:]
                 else:
                     # copy data into buffer
-                    self.data_buffer = np.frombuffer(data.data[: diff * self.sample_size], dtype=self.data_format, count=diff)
+                    if self.sample_size == 3:
+                        a = TypeConversion.int24_buffer_to_int32_buffer(data.data[: diff * self.sample_size])
+                        self.data_buffer = np.frombuffer(a, dtype=self.data_format, count=diff)
+                    else:
+                        self.data_buffer = np.frombuffer(data.data[: diff * self.sample_size], dtype=self.data_format, count=diff)
                     # reinit data_samples_counter
                     self.data_samples_counter = 0
                     if len(self.data_buffer) == (len(data.data) / self.sample_size):

@@ -15,12 +15,14 @@
 # ******************************************************************************
 #
 
+import sys
+import subprocess
 import json
 import os
 import math
 import struct
 from collections import OrderedDict
-import matplotlib.pyplot as plt
+
 import numpy as np
 import pandas as pd
 
@@ -331,7 +333,7 @@ class HSDatalog_v1:
             return sorted(set(dic.label for dic in self.acq_info_model.tags))
         log.warning("Empty Acquisition Info model.")
         # raise MissingAcquisitionInfoError
-        return None
+        return []
 
     def get_time_tags(self, which_tags = None):
         # for each label and for each time segment:
@@ -1078,7 +1080,47 @@ class HSDatalog_v1:
     #========================================================================================#
 
     # Plots Helper Functions ################################################################################################################
+
+    def draw_line(self, plt, ss_data_frame, idx, color, label, picker = False):
+        if picker:
+            line, = plt.plot(ss_data_frame['Time'], ss_data_frame.iloc[:, idx + 1], color=color, label=label, picker=5)
+        else:
+            line, = plt.plot(ss_data_frame['Time'], ss_data_frame.iloc[:, idx + 1], color=color, label=label)
+        return line
+
+    def draw_tag_lines(self, plt, ss_data_frame, label, alpha=0.9):
+        true_tag_idxs = ss_data_frame[label].loc[lambda x: x== True].index
+        tag_groups = np.split(true_tag_idxs, np.where(np.diff(true_tag_idxs) != 1)[0]+1)
+        for i in range(len(tag_groups)):
+            start_tag_time = ss_data_frame.at[tag_groups[i][0],'Time']
+            end_tag_time = ss_data_frame.at[tag_groups[i][-1],'Time']
+            plt.axvspan(start_tag_time, end_tag_time, facecolor='1', alpha=alpha)
+            plt.axvline(x=start_tag_time, color='g', label= "Start " + label)
+            plt.axvline(x=end_tag_time, color='r', label= "End " + label)
+
+    def set_plot_time_label(self, axs, fig, dim):
+        if dim > 1:
+            for ax in axs.flat:
+                ax.set(xlabel = 'Time (s)')
+            for ax in fig.get_axes():
+                ax.label_outer()
+        else:
+            axs[0].set(xlabel = 'Time (s)')
+    
+    def set_legend(self, ax):
+        old_handles, old_labels = ax.get_legend_handles_labels()
+        fileterd_labels = list(OrderedDict.fromkeys(old_labels))
+        filtered_handles = old_handles[:len(fileterd_labels)]
+        ax.legend(handles=filtered_handles, labels=fileterd_labels, loc='upper left', ncol=1)
+
     def __plot_sensor(self, sensor_name, ss_data_frame, cols, dim, subplots, label, raw_flag, unit, fft_params):
+        # Dynamically check and install matplotlib if not present
+        try:
+            import matplotlib.pyplot as plt
+        except ImportError:
+            subprocess.check_call([sys.executable, "-m", "pip", "install", "matplotlib"])
+            import matplotlib.pyplot as plt
+
         if subplots:
             fig, axs = plt.subplots(dim)
             if dim == 1: axs = [axs]
@@ -1087,15 +1129,15 @@ class HSDatalog_v1:
                 fig.text(0.04, 0.5, UnitMap().unit_dict.get(unit, unit), va='center', rotation='vertical')
             
             for idx, p in enumerate(axs):
-                PlotUtils.draw_line(p, ss_data_frame, idx, PlotUtils.lines_colors[idx], cols[idx])
-                # p.axes.set_xlim(left=-0.5)
+                self.draw_line(p, ss_data_frame, idx, PlotUtils.lines_colors[idx], cols[idx])
+                
                 p.set(title=cols[idx])
                 if label is not None:
                     p.patch.set_facecolor('0.6')
                     p.patch.set_alpha(float('0.5'))
-                    PlotUtils.draw_tag_lines(p, ss_data_frame, label)
+                    self.draw_tag_lines(p, ss_data_frame, label)
             
-            PlotUtils.set_plot_time_label(axs, fig, dim)
+            self.set_plot_time_label(axs, fig, dim)
             if label is not None:
                 for ax in axs:
                     old_handles, old_labels = ax.get_legend_handles_labels()
@@ -1111,11 +1153,10 @@ class HSDatalog_v1:
             else:
                 n_lines = dim
             for k in range(n_lines):
-                PlotUtils.draw_line(plt, ss_data_frame, k, PlotUtils.lines_colors[k], cols[k])
+                self.draw_line(plt, ss_data_frame, k, PlotUtils.lines_colors[k], cols[k])
 
             ax = fig.axes[0]
-            # ax.set_xlim(left=-0.5)
-            
+                        
             plt.title(sensor_name)
             plt.xlabel('Time (s)')
             plt.legend(loc='upper left')
@@ -1123,8 +1164,8 @@ class HSDatalog_v1:
             if label is not None:
                 ax.patch.set_facecolor('0.8')
                 ax.set_alpha(float('0.5'))
-                PlotUtils.draw_tag_lines(plt, ss_data_frame, label)
-                PlotUtils.set_legend(plt.gca())
+                self.draw_tag_lines(plt, ss_data_frame, label)
+                self.set_legend(plt.gca())
         
         plt.draw()
 
@@ -1139,7 +1180,7 @@ class HSDatalog_v1:
                     plt.title(sensor_name + " [" + cc[i] + "]")
                 # extract the signal values as a NumPy array
                 signal = ss_data_frame[c].values
-                # create a spectrogram using matplotlib
+                # create a spectrogram
                 plt.specgram(signal, Fs=fft_params[1])
 
                 plt.draw()
@@ -1207,7 +1248,7 @@ class HSDatalog_v1:
         return CLI.select_item("Data File", dat_file_list)
 
     def prompt_label_select_CLI(self, label_list = None):
-        if label_list is None:
+        if label_list is None or len(label_list) == 0:
             label_list = self.get_acquisition_label_classes()
         return CLI.select_item("Labels", label_list)
     

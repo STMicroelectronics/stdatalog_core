@@ -16,7 +16,7 @@
 import os
 import json
 import stdatalog_core.HSD_utils.logger as logger
-from stdatalog_pnpl.DTDL.device_template_manager import DeviceTemplateManager
+from stdatalog_pnpl.DTDL.device_template_manager import DeviceCatalogManager
 log = logger.setup_applevel_logger(is_debug = False, file_name= "app_debug.log")
 
 class HSDatalogDTM:
@@ -41,4 +41,4 @@ class HSDatalogDTM:
                 log.error("Wrong nput custom Device Template Model path")
                 return
             if n_dtm_json_str is not None:
-                DeviceTemplateManager.add_dtdl_model(n_board_id, n_fw_id, n_dtm_filename, n_dtm_json_str)
+                DeviceCatalogManager.add_dtdl_model(n_board_id, n_fw_id, n_dtm_filename, n_dtm_json_str)

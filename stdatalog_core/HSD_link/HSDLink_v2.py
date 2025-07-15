@@ -25,7 +25,7 @@ import stdatalog_core.HSD_utils.logger as logger
 from stdatalog_pnpl.PnPLCmd import PnPLCMDManager
 from .communication.PnPL_HSD.PnPLHSD_com_manager import PnPLHSD_CommandManager, PnPLHSD_Creator
 from stdatalog_core.HSD_link.communication.PnPL_STSRL.PnPLSTSRL_com_manager import PnPLSTSRL_Creator
-from stdatalog_pnpl.DTDL.device_template_manager import DeviceTemplateManager
+from stdatalog_pnpl.DTDL.device_template_manager import DeviceCatalogManager, DeviceTemplateManager
 
 from stdatalog_core.HSD_utils.exceptions import *
 
@@ -37,7 +37,12 @@ class HSDLink_v2:
     __base_acquisition_folder = None
     # __acquisition_folder = None
     
-    def __init__(self, dev_com_type: str = 'st_hsd', acquisition_folder = None, plug_callback = None, unplug_callback = None):
+    def __init__(self, dev_com_type: str = 'st_hsd', acquisition_folder = None, plug_callback = None, unplug_callback = None, update_catalog = True):
+        
+        # Update the device catalog if the update_catalog flag is set to True
+        if update_catalog:
+            DeviceCatalogManager.update_catalog()
+        
         self.__create_com_manager(dev_com_type, plug_callback, unplug_callback)
         
         self.acquisition_folder = None
@@ -444,7 +449,7 @@ class HSDLink_v2:
                     board_id = hex(pres_res["board_id"])
                     fw_id = hex(pres_res["fw_id"])
                     
-                    dev_template_json = DeviceTemplateManager.query_dtdl_model(board_id, fw_id)
+                    dev_template_json = DeviceCatalogManager.query_dtdl_model(board_id, fw_id)
                     fw_name = self.get_firmware_info(d_id).get("fw_name")
                     if fw_name is not None:
                         if isinstance(dev_template_json,list):
@@ -525,8 +530,8 @@ class HSDLink_v2:
 
 class HSDLink_v2_Serial(HSDLink_v2):
 
-    def __init__(self, dev_com_type: str = 'st_serial_datalog', acquisition_folder=None, plug_callback=None, unplug_callback=None):
-        super().__init__(dev_com_type, acquisition_folder, plug_callback, unplug_callback)
+    def __init__(self, dev_com_type: str = 'st_serial_datalog', acquisition_folder=None, plug_callback=None, unplug_callback=None, update_catalog = True):
+        super().__init__(dev_com_type, acquisition_folder, plug_callback, unplug_callback, update_catalog)
         self.__com_manager = self.get_com_manager()
 
     #@override

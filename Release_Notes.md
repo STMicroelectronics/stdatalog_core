@@ -28,7 +28,32 @@ The package is part of the **[STDATALOG-PYSDK](https://github.com/STMicroelectro
 # Update History
 
 ::: {.collapse}
-<input type="checkbox" id="collapse-section2" checked aria-hidden="true">
+<input type="checkbox" id="collapse-section3" checked aria-hidden="true">
+<label for="collapse-section3" aria-hidden="true">v1.2.0 / 20-Jun-25</label>
+<div>
+
+
+## Main Changes
+
+### Maintenance Release
+
+- Added support to Python 3.13 
+- Removed dependency from matplotlib: use Parquet + Plotly (wResampler) + Dash as default for HSDatalog_v2 plots
+- Updated type_conversion, managing float_t, double_t, int_24_t, uint24_t
+- Updated ACTUATOR components and properties management
+- Updated ToF plot: added ranging distance value for each zone + automatic time scrolling animation
+- New USB catalog management: sync/update with the online catalog
+- Moved query_dtdl_model from DeviceTemplateManager to DeviceCatalogManager class
+- Fixed data conversion in batch with dummy data (or spts = 0)
+- Fixed empty conversion job from not supported algorithm (i.e.: ai_motor_classifier)
+- Integration of new staiotcraft_sdk library version
+
+
+</div>
+:::
+
+::: {.collapse}
+<input type="checkbox" id="collapse-section2" aria-hidden="true">
 <label for="collapse-section2" aria-hidden="true">v1.1.0 / 9-Apr-25</label>
 <div>
 

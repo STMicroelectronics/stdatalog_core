@@ -21,14 +21,12 @@ from datetime import datetime
 from dateutil import parser
 import json
 import os
+import dask.dataframe as dd
 import struct
-from collections import OrderedDict
-import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from mpl_toolkits.axes_grid1.inset_locator import inset_axes
-from matplotlib.widgets import CheckButtons, Slider
 import numpy as np
 import pandas as pd
+from threading import Thread
+from werkzeug.serving import make_server
 
 from stdatalog_core.HSD.utils.plot_utils import PlotUtils
 from stdatalog_core.HSD_utils.exceptions import *
@@ -37,14 +35,32 @@ from stdatalog_core.HSD.utils.cli_interaction import CLIInteraction as CLI
 from stdatalog_core.HSD.utils.file_manager import FileManager
 from stdatalog_core.HSD.utils.type_conversion import TypeConversion
 from stdatalog_pnpl.DTDL.dtdl_utils import MC_FAST_TELEMETRY_SENSITIVITY, UnitMap
-from stdatalog_pnpl.DTDL.device_template_manager import DeviceTemplateManager
+from stdatalog_pnpl.DTDL.device_template_manager import DeviceCatalogManager, DeviceTemplateManager
 from stdatalog_pnpl.DTDL.device_template_model import ContentSchema, SchemaType
 from stdatalog_pnpl.DTDL.dtdl_utils import DTDL_SENSORS_ID_COMP_KEY, MC_FAST_TELEMETRY_COMP_NAME, MC_SLOW_TELEMETRY_COMP_NAME, AlgorithmTypeEnum, ComponentTypeEnum, SensorCategoryEnum
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
-import plotly.express as px
 
 log = logger.get_logger(__name__)
+
+class ServerThread(Thread):
+    def __init__(self, app, port=8050):
+        Thread.__init__(self)
+        self.server = make_server('127.0.0.1', port, app.server)
+        self.ctx = app.server.app_context()
+        self.ctx.push()
+        self.running = True
+
+    def run(self):        
+        log.debug("Starting Dash server for plotting on port {}...".format(self.server.port))
+        self.server.serve_forever()
+        log.debug("Dash server has started successfully.")
+
+    def shutdown(self):
+        log.debug("Shutting down Dash server for plotting on port {}...".format(self.server.port))
+        self.server.shutdown()
+        self.running = False
+        log.debug("Dash server has been shut down successfully.")
 
 class HSDatalog_v2:
     # Class attributes that will be used to store device model, acquisition info model,
@@ -56,12 +72,15 @@ class HSDatalog_v2:
     __acq_folder_path = None
     __checkTimestamps = False
     
-    def __init__(self, acquisition_folder = None):
+    def __init__(self, acquisition_folder = None, update_catalog = True):
         """
         Constructor method for initializing an instance of HSDatalog_v2.
 
         :param acquisition_folder: [Optional] The path to the folder where acquisition data is stored.
-        """
+        """        
+        # Update the device catalog if the update_catalog flag is set to True
+        if update_catalog:
+            DeviceCatalogManager.update_catalog()
         # If an acquisition folder is provided, proceed with initialization.
         if acquisition_folder is not None:
             # Attempt to find and load the device configuration from the acquisition folder.
@@ -102,6 +121,7 @@ class HSDatalog_v2:
         self.data_protocol_size = 4
         # A list of colors to be used for line plotting, for example in a graph.
         # self.lines_colors = ['#e6007e', '#a4c238', '#3cb4e6', '#ef4f4f', '#46b28e', '#e8ce0e', '#60b562', '#f99e20', '#41b3ba']
+        self.plot_threads: list[ServerThread] = []
     
     #========================================================================================#
     ### Data Analisys ########################################################################
@@ -215,7 +235,7 @@ class HSDatalog_v2:
         board_id = hex(self.device_model["board_id"])
         fw_id = hex(self.device_model["fw_id"])
         
-        dev_template_json = DeviceTemplateManager.query_dtdl_model(board_id, fw_id)
+        dev_template_json = DeviceCatalogManager.query_dtdl_model(board_id, fw_id)
         if isinstance(dev_template_json,dict):
             if dev_template_json == {}:
                 raise MissingDeviceModelError(board_id,fw_id)
@@ -492,7 +512,7 @@ class HSDatalog_v2:
                 return sorted(set(dic['l'] for dic in self.acq_info_model['tags']))
             else:
                 log.warning("No defined tag classes in Acquisition Information Component.")
-                return None
+                return []
         log.warning("Empty Acquisition Info model.")
         # raise MissingAcquisitionInfoError
         return None
@@ -595,10 +615,10 @@ class HSDatalog_v2:
                 else:
                     check_timestamps = False
                 if s_category == SensorCategoryEnum.ISENSOR_CLASS_LIGHT.value:
-                   odr = 1/(ss_stat.get("intermeasurement_time")/1000) if ss_stat.get("intermeasurement_time") > ss_stat.get("exposure_time")/1000 + 6  else (1/((ss_stat.get("exposure_time")/1000 + 6)/1000))
-                   frame_period = 0 if sensor_name_contains_mlc_ispu else samples_per_ts / odr
+                    odr = 1/(ss_stat.get("intermeasurement_time")/1000) if ss_stat.get("intermeasurement_time") > ss_stat.get("exposure_time")/1000 + 6  else (1/((ss_stat.get("exposure_time")/1000 + 6)/1000))
+                    frame_period = 0 if sensor_name_contains_mlc_ispu else samples_per_ts / odr
                 elif s_category == SensorCategoryEnum.ISENSOR_CLASS_POWERMETER.value:
-                   frame_period = 0 if sensor_name_contains_mlc_ispu else samples_per_ts / (1/(ss_stat.get("adc_conversion_time")/1000000))
+                    frame_period = 0 if sensor_name_contains_mlc_ispu else samples_per_ts / (1/(ss_stat.get("adc_conversion_time")/1000000))
                 else:
                     measodr = ss_stat.get("measodr")
                     if measodr is None or measodr == 0:
@@ -614,7 +634,10 @@ class HSDatalog_v2:
                 algo_type = ss_stat.get("algorithm_type")
             elif c_type == ComponentTypeEnum.ACTUATOR.value:
                 check_timestamps = False
-                frame_period = 0
+                if "samples_per_ts" not in ss_stat:
+                    frame_period = 0
+                else:
+                    frame_period = samples_per_ts / ss_stat.get("odr")
 
             # rndDataBuffer = raw_data rounded to an integer # of frames
             rnd_data_buffer = raw_data[:int(frame_size * num_frames)]
@@ -632,6 +655,9 @@ class HSDatalog_v2:
                     start_frame = ii * frame_size
                     # segment_data = data in the current frame
                     segment_data = rnd_data_buffer[start_frame:start_frame + dataframe_size]
+                    if data_type_string == "int24" or data_type_string == "int24_t":
+                        segment_data = TypeConversion.int24_buffer_to_int32_buffer(segment_data)
+
                     # segment_tS = ts is at the end of each frame
                     segment_ts = rnd_data_buffer[start_frame + dataframe_size:start_frame + frame_size]
 
@@ -649,7 +675,9 @@ class HSDatalog_v2:
                             data[data_range, 0] = 0
                             timestamps[ii] = timestamps[ii - 1] + frame_period
                             log.warning("Sensor {}: corrupted data at {}".format(sensor_name, "{} sec".format(timestamps[ii])))
-            else:
+            else:                
+                if data_type_string == "int24" or data_type_string == "int24_t":
+                    rnd_data_buffer = TypeConversion.int24_buffer_to_int32_buffer(rnd_data_buffer)
                 data = np.frombuffer(rnd_data_buffer, dtype=data_type)
                 is_first_chunk = ss_stat.get("is_first_chunk", False)
                 if is_first_chunk:
@@ -723,7 +751,7 @@ class HSDatalog_v2:
                 # sample times between timestamps are linearly interpolated
                 for ii in range(frames): # For each Frame:
                     delta_ts = abs(timestamps[ii+1] - timestamps[ii])
-                    if delta_ts > frame_period + frame_period * 0.33:
+                    if frame_period > 0 and delta_ts > frame_period + frame_period * 0.33:
                         samples_times[ii * samples_per_ts:(ii + 1) * samples_per_ts, 0] = np.linspace(timestamps[ii + 1]-frame_period, timestamps[ii + 1], samples_per_ts, endpoint= False)
                     else:
                         samples_times[ii * samples_per_ts:(ii + 1) * samples_per_ts, 0] = np.linspace(timestamps[ii], timestamps[ii + 1], samples_per_ts, endpoint= False)
@@ -776,7 +804,8 @@ class HSDatalog_v2:
                 nof_telemetries = len([st for st in desc_telemetry if isinstance(desc_telemetry[st],dict) and desc_telemetry[st].get("enable")==True])
             elif sensor_name == "fast_mc_telemetries":
                 nof_telemetries = len([k for k in ss_stat.keys() if isinstance(ss_stat[k],dict) and k != "sensitivity" and ss_stat[k]["enabled"] == True])
-            samples_per_ts = dataframe_size // data_type_byte_num // nof_telemetries
+            if "samples_per_ts" not in ss_stat:
+                samples_per_ts = dataframe_size // data_type_byte_num // nof_telemetries
 
         return extract_data_and_timestamps(start_time)
     
@@ -871,7 +900,8 @@ class HSDatalog_v2:
             else:
                 s_samples_per_ts = spts.get('val', 0)
         
-        if c_type == ComponentTypeEnum.SENSOR.value:
+        if c_type == ComponentTypeEnum.SENSOR.value or \
+          (c_type == ComponentTypeEnum.ACTUATOR.value and "odr" in comp_status):
 
             if s_samples_per_ts != 0:
                 dataframe_byte_size = s_samples_per_ts * s_dim * s_data_type_len
@@ -902,7 +932,7 @@ class HSDatalog_v2:
                 if sample_end > tot_data_samples or sample_end == -1:
                     sample_end = tot_data_samples
                 sample_start = int(odr * start_time)
-                if sample_start > tot_data_samples:
+                if sample_start >= tot_data_samples:
                     return ([],[])
                 read_start_bytes = sample_start * dataframe_byte_size
                 read_end_bytes = sample_end * dataframe_byte_size
@@ -958,9 +988,6 @@ class HSDatalog_v2:
                 end_time_flag = False
                 skip_counter_check = False
                 prev_timestamp = None
-                
-                if start_idx >= file_size:
-                    return [],None
 
                 with open(file_path, 'rb') as f:
                     for n in range(nof_data_packet+1):
@@ -1155,34 +1182,8 @@ class HSDatalog_v2:
             log.debug(f"data Len: {len(data)}")
             log.debug(f"Time Len: {len(timestamp)}")
             return data, timestamp
-
-        elif c_type == ComponentTypeEnum.ALGORITHM.value:
-            if algo_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:#"fft":
-                log.debug("FFT Algorithm! No batch")
-                
-                dataframe_byte_size = int(s_dim * s_data_type_len)
-                timestamp_byte_size = 0
-
-                with open(file_path, "rb") as f:
-                    f_data = f.read()
-                    if not f_data:
-                        log.error("No data @ index: {} for file \"{}\" size: {}[bytes]".format(0, file_path, os.stat(f.name).st_size))
-                        raise NoDataAtIndexError(0, file_path, os.stat(f.name).st_size)
-                    raw_data = np.fromstring(f_data, dtype='uint8')
-                    new_array = self.remove_4bytes_every_n_optimized(raw_data, cmplt_pkt_size)
-                
-                data, timestamp = self.__process_datalog(comp_name, comp_status, new_array, dataframe_byte_size, timestamp_byte_size, raw_flag = raw_flag, start_time=start_time)
-
-                #DEBUG
-                log.debug(f"data Len: {len(data)}")
-                log.debug(f"Time Len: {len(timestamp)}")
-                return data, timestamp
-            else:
-                log.error("Algorithm type not supported")
-                return None, None
-
-        elif c_type == ComponentTypeEnum.ACTUATOR.value:
-
+        
+        elif c_type == ComponentTypeEnum.ACTUATOR.value and "odr" not in comp_status:
             if comp_name == MC_SLOW_TELEMETRY_COMP_NAME or comp_name == MC_FAST_TELEMETRY_COMP_NAME:
                 if data_packet_size is not None:
                     with open(file_path, "rb") as f:
@@ -1210,6 +1211,32 @@ class HSDatalog_v2:
                 else:
                     log.error("Actuator type not supported")
                     return None, None
+
+        elif c_type == ComponentTypeEnum.ALGORITHM.value:
+            if algo_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:#"fft":
+                log.debug("FFT Algorithm! No batch")
+                
+                dataframe_byte_size = int(s_dim * s_data_type_len)
+                timestamp_byte_size = 0
+
+                with open(file_path, "rb") as f:
+                    f_data = f.read()
+                    if not f_data:
+                        log.error("No data @ index: {} for file \"{}\" size: {}[bytes]".format(0, file_path, os.stat(f.name).st_size))
+                        raise NoDataAtIndexError(0, file_path, os.stat(f.name).st_size)
+                    raw_data = np.fromstring(f_data, dtype='uint8')
+                    new_array = self.remove_4bytes_every_n_optimized(raw_data, cmplt_pkt_size)
+                
+                data, timestamp = self.__process_datalog(comp_name, comp_status, new_array, dataframe_byte_size, timestamp_byte_size, raw_flag = raw_flag, start_time=start_time)
+
+                #DEBUG
+                log.debug(f"data Len: {len(data)}")
+                log.debug(f"Time Len: {len(timestamp)}")
+                return data, timestamp
+            else:
+                log.error("Algorithm type not supported")
+                return None, None
+
 
     #TODO! DEPRECATE OR REMOVE THIS FUNCTION
     def get_data_and_timestamps(self, sensor_name, sub_sensor_type, start_time = 0, end_time = -1, raw_flag = False):
@@ -1719,7 +1746,6 @@ class HSDatalog_v2:
     #========================================================================================#
 
     # Plots Helper Functions ################################################################################################################
-        
     def __plot_ranging_sensor(self, sensor_name, ss_data_frame, res, output_format):
 
         # Function to extract the target identifier from the key
@@ -1731,6 +1757,9 @@ class HSDatalog_v2:
         # Group the targets
         targets = {}
         new_shape = (res, res)
+        
+        # Create a list to store figures to be returned
+        figures = []
 
         nof_outputs = output_format.get("nof_outputs")
         for key, value in output_format.items():
@@ -1765,15 +1794,24 @@ class HSDatalog_v2:
                 t1_mat = np.flip(t1_mat, axis=0)
                 t1_mat = np.swapaxes(t1_mat, 0, 1)
                 dist_matrices[r_id] = t1_mat
-            
-            annotations = np.zeros((new_shape[0], new_shape[1]), dtype=object)
-            # Create text annotations
-            for i in range(new_shape[0]):
-                for j in range(new_shape[1]):
-                    annotations[i][j] = f'Z{new_shape[0]*(new_shape[0]-1-i)+(new_shape[1]-1-j)}'
 
             # Handle NaN values by filling them with a default value (e.g., 0)
             dist_matrices = [np.nan_to_num(matrix, nan=-1) for matrix in dist_matrices]
+
+            # Prepare annotation arrays for each frame
+            annotations_list = []
+            for frame_idx in range(nof_rows):
+                frame_annotations = np.zeros((new_shape[0], new_shape[1]), dtype=object)
+                for i in range(new_shape[0]):
+                    for j in range(new_shape[1]):
+                        z_index = new_shape[0]*(new_shape[0]-1-i)+(new_shape[1]-1-j)
+                        z_value = dist_matrices[frame_idx][i][j]
+                        if z_value == -1:
+                            z_str = "-"
+                        else:
+                            z_str = f"{int(z_value)}"
+                        frame_annotations[i][j] = f'Z{z_index}<br>{z_str}'
+                annotations_list.append(frame_annotations)
 
             # Define a custom colorscale
             custom_colorscale = [
@@ -1789,38 +1827,83 @@ class HSDatalog_v2:
                 [1, 'rgb(253, 231, 37)']  # End of Viridis colorscale
             ]
 
-            # Create the initial heatmap
-            fig = go.Figure(data=go.Heatmap(z=dist_matrices[0], colorscale=custom_colorscale, zmin=-1, zmax=4000, text=annotations, texttemplate="%{text}"))
-            fig.update_layout(title=f"{sensor_name.upper()}",
-                            xaxis_title="X",
-                            yaxis_title="Y",
-                            xaxis=dict(
-                                scaleanchor="y",
-                                scaleratio=1  # 1 means 1:1 aspect ratio, adjust as needed
-                            ),
-                            yaxis=dict(
-                                scaleratio=1
-                            )
-            )
-
-            # Add slider
-            steps = []
-            for i in range(nof_rows):
-                step = dict(
-                    method="update",
-                    args=[{"z": [dist_matrices[i]]}],
-                    label=f"{times[i]:.2f} s"  # Use slider labels to show time
+            # Create frames for animation
+            frames = [
+                go.Frame(
+                    data=[go.Heatmap(
+                        z=dist_matrices[i],
+                        colorscale=custom_colorscale,
+                        zmin=-1, zmax=4000,
+                        text=annotations_list[i],
+                        texttemplate="%{text}"
+                    )],
+                    name=str(i)
                 )
-                steps.append(step)
+                for i in range(nof_rows)
+            ]
 
-            sliders = [dict(
-                active=0,
-                currentvalue={"prefix": "Time: "},
-                pad={"t": 50},
-                steps=steps
-            )]
-
-            fig.update_layout(sliders=sliders)
+            # Create the initial heatmap with the first frame's annotations
+            fig = go.Figure(
+                data=[go.Heatmap(
+                    z=dist_matrices[0],
+                    colorscale=custom_colorscale,
+                    zmin=-1, zmax=4000,
+                    text=annotations_list[0],
+                    texttemplate="%{text}"
+                )],
+                frames=frames,
+                layout=go.Layout(
+                    title=f"{sensor_name.upper()} - Target {t}",
+                    xaxis=dict(
+                        scaleanchor="y",
+                        scaleratio=1
+                    ),
+                    yaxis=dict(
+                        scaleratio=1
+                    ),
+                    updatemenus=[{
+                        "type": "buttons",
+                        "direction": "right",
+                        "buttons": [
+                            {
+                                "label": "Play",
+                                "method": "animate",
+                                "args": [None, {
+                                    "frame": {"duration": 500, "redraw": True},
+                                    "fromcurrent": True
+                                }]
+                            },
+                            {
+                                "label": "Pause",
+                                "method": "animate",
+                                "args": [[None], {
+                                    "frame": {"duration": 0, "redraw": True},
+                                    "mode": "immediate"
+                                }]
+                            }
+                        ],
+                        "showactive": True,
+                        "x": 1,
+                        "y": -0.15,
+                        "xanchor": "right",
+                        "yanchor": "bottom"
+                    }],
+                    sliders=[{
+                        "steps": [
+                            {
+                                "args": [[str(i)], {"frame": {"duration": 500, "redraw": True}, "mode": "immediate"}],
+                                "label": f"{times[i]:.2f} s",
+                                "method": "animate"
+                            } for i in range(nof_rows)
+                        ],
+                        "transition": {"duration": 300},
+                        "x": 0,
+                        "y": -0.1,
+                        "currentvalue": {"prefix": "Time: "},
+                        "len": 1
+                    }]
+                )
+            )
 
             # Add legend for invalid zones
             fig.add_trace(go.Scatter(
@@ -1848,10 +1931,13 @@ class HSDatalog_v2:
 
             # Change the browser tab name using the sensor_name
             fig.update_layout(title_text=f"{sensor_name.upper()}", title_x=0.5)
+            
+            # Add the figure to the list of figures
+            figures.append(fig)
 
-            fig.show()
+        figures.append(self.__plot_pixels_over_time(sensor_name, ss_data_frame, res*res, masked_df))
 
-        self.__plot_pixels_over_time(sensor_name, ss_data_frame, res*res, masked_df)
+        return figures
 
     def __plot_pixels_over_time(self, sensor_name, ss_data_frame, resolution, t1_dist_df):
         times_col = ss_data_frame.iloc[:, 0]
@@ -1879,255 +1965,181 @@ class HSDatalog_v2:
             )
         )
 
-        fig.show()
+        return fig
     
-    def __plot_light_sensor(self, sensor_name, ss_data_frame, cols, dim, label):
-        fig = plt.figure()
-        als_lines_colors = ["#FF0000", "#999999", "#0000FF", "#00FF00", "#FF00FF", "#000000"]
-        for idx, k in enumerate(range(dim)):
-            PlotUtils.draw_line(plt, ss_data_frame, k, als_lines_colors[idx], cols[idx])
-
-        ax = fig.axes[0]
+    def __plot_light_sensor(self, sensor_name, dask_chunk, cols, label):
+        layout = go.Layout(
+            title=f"{sensor_name.upper()} - Ambient Light Sensor",
+            xaxis_title="Time (s)",
+            yaxis_title="ADC Count",
+            autosize=True
+        )
+        fig = go.Figure(layout=layout)
+        als_lines_colors = ["#000000", "#FF0000", "#999999", "#0000FF", "#00FF00", "#FF00FF"]
+        for i, c in enumerate(cols):
+            if c != "Time":
+                y_column = c
+                color = als_lines_colors[i % len(als_lines_colors)]
+                fig.add_trace(go.Scatter(x=dask_chunk["Time"], y=dask_chunk[y_column], mode='lines', name=y_column, line=dict(color=color)))
         
+        # Add vertical rectangles for labeled data
         if label is not None:
-            ax.patch.set_facecolor('0.8')
-            ax.set_alpha(float('0.5'))
-            PlotUtils.draw_tag_lines(plt, ss_data_frame, label)
-            PlotUtils.set_legend(plt.gca())
-        else:
-            plt.legend(loc='upper left', ncol=1)
+            label_time_tags = self.get_time_tags(label)
+            PlotUtils.draw_tags_regions(fig, label_time_tags)
+        return fig
 
-        plt.title(sensor_name.upper())
-        plt.tight_layout(pad=2.0)
-        plt.ylabel("ADC count")
-        plt.xlabel('Time (s)')
-
-        plt.draw()
-
-    def __plot_presence_sensor(self, sensor_name, ss_data_frame, cols, label, software_compensation, embedded_compensation):
-        fig = plt.figure()
+    def __plot_presence_sensor(self, sensor_name, dask_chunk, cols, label, software_compensation, embedded_compensation):
         
-        for idx in range(2):
-            PlotUtils.draw_line(plt, ss_data_frame, idx, PlotUtils.lines_colors[idx], cols[idx])
+        # Create a list to store figures to be returned
+        figures = []
         
-        ax = fig.axes[0]
-        # ax.set_xlim(left=-0.5)
-
+        # create a new layout for the Ambient & Object (raw) figure
+        layout = go.Layout(
+            title=f"{sensor_name.upper()} - Ambient & Object (raw)",
+            xaxis_title="Time (s)",
+            yaxis_title="Value",
+            autosize=True
+        )
+        # Create a new figure with the previously defined layout
+        fig = go.Figure(layout=layout)
+        
+        # Plot Ambient and Object (raw) traces
+        for idx, c in enumerate(cols[1:3]): # Skip the first column (Time), plot the next two columns (Tambient (raw) and Tobject (raw))
+            fig.add_trace(go.Scatter(x=dask_chunk["Time"], y=dask_chunk[c], mode='lines', name=c, line=dict(color=PlotUtils.lines_colors[idx])))
+        
+        # Add vertical rectangles for labeled data
         if label is not None:
-            ax.patch.set_facecolor('0.6')
-            ax.set_alpha(float('0.5'))
-            PlotUtils.draw_tag_lines(plt, ss_data_frame, label)
-            PlotUtils.set_legend(plt.gca())
-        else:
-            plt.legend(loc='upper left', ncol=1)
+            label_time_tags = self.get_time_tags(label)
+            PlotUtils.draw_tags_regions(fig, label_time_tags)
         
-        plt.title(f"{sensor_name.upper()} - Ambient & Object (raw)")
-        plt.xlabel('Time (s)')
-        plt.tight_layout()
-        plt.draw()
+        # Add Plot Ambient and Object (raw) figure to the list of figures to be returned
+        figures.append(fig)
+
+        # create a new layout for the Presence figure
+        layout = go.Layout(
+            title=f"{sensor_name.upper()} - Presence",
+            xaxis_title="Time (s)",
+            yaxis_title="Value",
+            autosize=True
+        )
+        # Create a new figure with the previously defined layout
+        fig = go.Figure(layout=layout)
 
         line_color = "#335c67"
         line_color_sw = "#bb3e03"
         line_color_emb = "#ff9900"
         if software_compensation or embedded_compensation:
-            fig, axs = plt.subplots(2)
-            fig.suptitle(f"{sensor_name.upper()} - Presence")
+            fig = make_subplots(rows=2, cols=1)
+            fig.add_trace(go.Scatter(x=dask_chunk["Time"], y=dask_chunk[cols[4]], line=dict(color=line_color), mode='lines', name=cols[4]), row=1, col=1)
+            fig.update_xaxes(title_text="Time (s)", row=1, col=1)
+            fig.update_yaxes(title_text="Value", row=1, col=1)
+            PlotUtils.draw_regions(fig, dask_chunk, "Presence flag", "#97D3C2", 0.5, 1, 1, False)
+            if embedded_compensation:
+                fig.add_trace(go.Scatter(x=dask_chunk["Time"],  y=dask_chunk[cols[3]], line=dict(color=line_color_emb), mode='lines', name=cols[3]), row=2, col=1)
+                fig.update_xaxes(title_text="Time (s)", row=2, col=1)
+                fig.update_yaxes(title_text="Value", row=2, col=1)
+            if software_compensation:
+                fig.add_trace(go.Scatter(x=dask_chunk["Time"], y=dask_chunk[cols[8]], line=dict(color=line_color_sw), mode='lines', name=cols[8]), row=2, col=1)
+                PlotUtils.draw_regions(fig, dask_chunk, "Presence flag (sw_comp)", "#FDD891", 0.5, 2, 1, False)
+                fig.update_xaxes(title_text="Time (s)", row=2, col=1)
+                fig.update_yaxes(title_text="Value", row=2, col=1)
+            fig.update_layout(title_text=f"{sensor_name.upper()} - Presence")
         else:
-            fig = plt.figure()
-            axs = None
-            plt.title(f"{sensor_name.upper()} - Presence")
+            fig.add_trace(go.Scatter(x=dask_chunk["Time"], y=dask_chunk[cols[34]], line=dict(color=line_color), mode='lines', name=cols[4]))
+            PlotUtils.draw_regions(fig, dask_chunk, "Presence flag", "#97D3C2", 0.5, show_label=False)
+
+        # Add vertical rectangles for labeled data
+        if label is not None:
+            label_time_tags = self.get_time_tags(label)
+            PlotUtils.draw_tags_regions(fig, label_time_tags)
+
+        figures.append(fig)
+
+        layout = go.Layout(
+            title=f"{sensor_name.upper()} - Motion",
+            xaxis_title="Time (s)",
+            yaxis_title="Value",
+            autosize=True
+        )
+        fig = go.Figure(layout=layout)
+        fig = make_subplots(rows=2, cols=1)
+
+        fig.add_trace(go.Scatter(x=dask_chunk["Time"], y=dask_chunk[cols[6]], line=dict(color=line_color), mode='lines', name=cols[6]), row=1, col=1)
+        fig.update_xaxes(title_text="Time (s)", row=1, col=1)
+        fig.update_yaxes(title_text="Value", row=1, col=1)
+        PlotUtils.draw_regions(fig, dask_chunk, "Motion flag", "#97D3C2", 0.5, 1, 1, False)
         
-        if axs is not None:
-            for idx, p in enumerate(axs):
-                if idx == 0:#Presence + Flag
-                    color = "#97D3C2"
-                    edgecolor = PlotUtils.darken_color(color, 10)
-                    PlotUtils.draw_regions(p, ss_data_frame, "Presence flag", color, edgecolor, 1, '')
-                    PlotUtils.draw_line(p, ss_data_frame, 3, line_color, cols[3])
-                    flag_patch = mpatches.Patch(color=color, label='Presence flag')
-                
-                elif idx == 1:#Presence + SW Flag
-                    color = "#FDD891"
-                    edgecolor = PlotUtils.darken_color(color, 10)
-                    if embedded_compensation:
-                        PlotUtils.draw_line(p, ss_data_frame, 2, line_color_emb, cols[2])# tObj emb comp
-                    if software_compensation:
-                        PlotUtils.draw_regions(p, ss_data_frame, "Presence flag (sw_comp)", color, edgecolor, 1, '')
-                        PlotUtils.draw_line(p, ss_data_frame, 7, line_color_sw, cols[7])# tObj sw comp
-                        flag_patch = mpatches.Patch(color=color, label='Presence flag (sw_comp)')
-                
-                if label is not None:
-                    p.patch.set_facecolor('0.6')
-                    p.patch.set_alpha(float('0.5'))
-                    pre_tag_handles, pre_tag_labels = p.get_legend_handles_labels()
-                    if idx == 0 or (idx == 1 and software_compensation):
-                        pre_tag_handles.append(flag_patch)
-                        pre_tag_labels.append(flag_patch.get_label())
-                    PlotUtils.draw_tag_lines(p, ss_data_frame, label, 0.4)
-                    old_handles, old_labels = p.get_legend_handles_labels()
-                    for h in old_handles[1:]:
-                        pre_tag_handles.append(h)
-                    for l in old_labels[1:]:
-                        pre_tag_labels.append(l)
-                else:
-                    pre_tag_handles, pre_tag_labels = p.get_legend_handles_labels()
-                    if idx == 0 or (idx == 1 and software_compensation):
-                        pre_tag_handles.append(flag_patch)
-                        pre_tag_labels.append(flag_patch.get_label())
-                p.legend(handles=pre_tag_handles, labels=list(OrderedDict.fromkeys(pre_tag_labels)), loc='upper left', ncol=1)
+        fig.add_trace(go.Scatter(x=dask_chunk["Time"], y=dask_chunk[cols[9]], line=dict(color=line_color_sw), mode='lines', name=cols[9]), row=2, col=1)
+        PlotUtils.draw_regions(fig, dask_chunk, "Motion flag (sw_comp)", "#FDD891", 0.5, 2, 1, False)
+        fig.update_xaxes(title_text="Time (s)", row=2, col=1)
+        fig.update_yaxes(title_text="Value", row=2, col=1)
+        
+        fig.update_layout(title_text=f"{sensor_name.upper()} - Motion")
+        figures.append(fig)
+
+        return figures
+
+    def __plot_mems_audio_sensor(self, sensor_name, dask_chunk, cols, dim, subplots, label, raw_flag, unit, fft_params):
+        # Create a list to store figures to be returned
+        figures = []
+        
+        # create a new layout for the Ambient & Object (raw) figure
+        layout = go.Layout(
+            title=sensor_name.upper() if (not raw_flag) else sensor_name.upper() + " (raw)",
+            xaxis_title = "Time (s)",
+            yaxis_title = UnitMap().unit_dict.get(unit, unit) if (not raw_flag and unit is not None) else "",
+            autosize=True
+        )
+        # Create a new figure with the previously defined layout
+        fig = go.Figure(layout=layout)
+
+        if subplots and dim > 1:
+            fig = make_subplots(rows=dim, cols=1)
+            for i in range(dim):
+                fig.add_trace(go.Scatter(x=dask_chunk["Time"], y=dask_chunk[cols[i+1]], line=dict(color=PlotUtils.lines_colors[i]), mode='lines', name=cols[i+1]), row=i+1, col=1)
+                fig.update_xaxes(title_text="Time (s)", row=i+1, col=1)
+                if not raw_flag and unit is not None:
+                    fig.update_yaxes(title_text=UnitMap().unit_dict.get(unit, unit), row=i+1, col=1)
         else:
-            color = "#97D3C2"
-            edgecolor = PlotUtils.darken_color(color, 10)
-            PlotUtils.draw_regions(plt, ss_data_frame, "Presence flag", color, edgecolor, 1, '')
-            PlotUtils.draw_line(plt, ss_data_frame, 3, line_color, cols[3])
-            flag_patch = mpatches.Patch(color=color, label='Presence flag')
-            
-            ax = fig.axes[0]
-
-            if label is not None:
-                ax.patch.set_facecolor('0.6')
-                ax.patch.set_alpha(float('0.5'))
-                pre_tag_handles, pre_tag_labels = ax.get_legend_handles_labels()
-                pre_tag_handles.append(flag_patch)
-                pre_tag_labels.append(flag_patch.get_label())
-                PlotUtils.draw_tag_lines(plt, ss_data_frame, label, 0.4)
-                old_handles, old_labels = ax.get_legend_handles_labels()
-                for h in old_handles[1:]:
-                    pre_tag_handles.append(h)
-                for l in old_labels[1:]:
-                    pre_tag_labels.append(l)
-            else:
-                pre_tag_handles, pre_tag_labels = ax.get_legend_handles_labels()
-                pre_tag_handles.append(flag_patch)
-                pre_tag_labels.append(flag_patch.get_label())
-                plt.legend(handles=pre_tag_handles, labels=list(OrderedDict.fromkeys(pre_tag_labels)), loc='upper left', ncol=1)
-
-        plt.xlabel('Time (s)')
-        plt.tight_layout()
-        plt.draw()
-
-        if software_compensation:
-            fig, axs = plt.subplots(2)
-            fig.suptitle(f"{sensor_name.upper()} - Motion")
-        else:
-            fig = plt.figure()
-            axs = None
-            plt.title(f"{sensor_name.upper()} - Motion")
-
-        if axs is not None:
-            for idx, p in enumerate(axs):
-                if idx == 0:#Motion + Flag
-                    color = "#97D3C2"
-                    edgecolor = PlotUtils.darken_color(color, 10)
-                    PlotUtils.draw_regions(p, ss_data_frame, "Motion flag", color, edgecolor, 1, '')
-                    PlotUtils.draw_line(p, ss_data_frame, 5, line_color, cols[5])
-                    flag_patch = mpatches.Patch(color=color, label='Motion flag')
-                elif idx == 1:#Motion + SW Flag
-                    color = "#FDD891"
-                    edgecolor = PlotUtils.darken_color(color, 10)
-                    PlotUtils.draw_regions(p, ss_data_frame, "Motion flag (sw_comp)", color, edgecolor, 1, '')
-                    PlotUtils.draw_line(p, ss_data_frame, 8, line_color_sw, cols[8]) #Tobj change
-                    flag_patch = mpatches.Patch(color=color, label='Motion flag (sw_comp)')
-                
-                if label is not None:
-                    p.patch.set_facecolor('0.6')
-                    p.patch.set_alpha(float('0.5'))
-                    pre_tag_handles, pre_tag_labels = p.get_legend_handles_labels()
-                    pre_tag_handles.append(flag_patch)
-                    pre_tag_labels.append(flag_patch.get_label())
-                    PlotUtils.draw_tag_lines(p, ss_data_frame, label, 0.4)
-                    old_handles, old_labels = p.get_legend_handles_labels()
-                    for h in old_handles[1:]:
-                        pre_tag_handles.append(h)
-                    for l in old_labels[1:]:
-                        pre_tag_labels.append(l)
-                else:
-                    pre_tag_handles, pre_tag_labels = p.get_legend_handles_labels()
-                    pre_tag_handles.append(flag_patch)
-                    pre_tag_labels.append(flag_patch.get_label())
-                p.legend(handles=pre_tag_handles, labels=list(OrderedDict.fromkeys(pre_tag_labels)), loc='upper left', ncol=1)
-            
-        else:
-            color = "#97D3C2"
-            edgecolor = PlotUtils.darken_color(color, 10)
-            PlotUtils.draw_regions(plt, ss_data_frame, "Motion flag", color, edgecolor, 1, '')
-            PlotUtils.draw_line(plt, ss_data_frame, 5, line_color, cols[5])
-            flag_patch = mpatches.Patch(color=color, label='Motion flag')
-            
-            ax = fig.axes[0]
-
-            if label is not None:               
-                ax.patch.set_facecolor('0.6')
-                ax.patch.set_alpha(float('0.5'))
-                pre_tag_handles, pre_tag_labels = ax.get_legend_handles_labels()
-                pre_tag_handles.append(flag_patch)
-                pre_tag_labels.append(flag_patch.get_label())
-                PlotUtils.draw_tag_lines(plt, ss_data_frame, label, 0.4)
-                old_handles, old_labels = ax.get_legend_handles_labels()
-                for h in old_handles[1:]:
-                    pre_tag_handles.append(h)
-                for l in old_labels[1:]:
-                    pre_tag_labels.append(l)
-            else:
-                pre_tag_handles, pre_tag_labels = ax.get_legend_handles_labels()
-                pre_tag_handles.append(flag_patch)
-                pre_tag_labels.append(flag_patch.get_label())
-            plt.legend(handles=pre_tag_handles, labels=list(OrderedDict.fromkeys(pre_tag_labels)), loc='upper left', ncol=1)
-
-        plt.xlabel('Time (s)')
-        plt.tight_layout()
-        plt.draw()
-
-    def __plot_mems_audio_sensor(self, sensor_name, ss_data_frame, cols, dim, subplots, label, raw_flag, unit, fft_params):
-        if subplots:
-            fig, axs = plt.subplots(dim)
-            if dim == 1: axs = [axs]
-            fig.suptitle(sensor_name)
-            if not raw_flag and unit is not None:
-                fig.text(0.04, 0.5, UnitMap().unit_dict.get(unit, unit), va='center', rotation='vertical')
-            
-            for idx, p in enumerate(axs):
-                PlotUtils.draw_line(p, ss_data_frame, idx, PlotUtils.lines_colors[idx], cols[idx])
-                # p.axes.set_xlim(left=-0.5)
-                p.set(title=cols[idx])
-                if label is not None:
-                    p.patch.set_facecolor('0.6')
-                    p.patch.set_alpha(float('0.5'))
-                    PlotUtils.draw_tag_lines(p, ss_data_frame, label)
-            
-            PlotUtils.set_plot_time_label(axs, fig, dim)
-            if label is not None:
-                for ax in axs:
-                    PlotUtils.set_legend(ax)
-        else:
-            fig = plt.figure()
-
-            if not raw_flag and unit is not None:
-                plt.ylabel(UnitMap().unit_dict.get(unit, unit))
-
             if "_ispu" in sensor_name:
                 n_lines = len(self.get_ispu_output_column_names())
             else:
                 n_lines = dim
-            for k in range(n_lines):
-                PlotUtils.draw_line(plt, ss_data_frame, k, PlotUtils.lines_colors[k], cols[k])
-
-            ax = fig.axes[0]
-            # ax.set_xlim(left=-0.5)
             
-            plt.title(sensor_name)
-            plt.xlabel('Time (s)')
-            plt.legend(loc='upper left')
-
-            if label is not None:
-                ax.patch.set_facecolor('0.8')
-                ax.set_alpha(float('0.5'))
-                PlotUtils.draw_tag_lines(plt, ss_data_frame, label)
-                PlotUtils.set_legend(plt.gca())
+            for i in range(n_lines):
+                fig.add_trace(go.Scatter(x=dask_chunk["Time"], y=dask_chunk[cols[i+1]], line=dict(color=PlotUtils.lines_colors[i]), mode='lines', name=cols[i+1]))
         
-        plt.draw()
+        fig.update_layout(title_text=sensor_name.upper() if (not raw_flag) else sensor_name.upper() + " (raw)")
+        
+        # Add vertical rectangles for labeled data
+        if label is not None:
+            label_time_tags = self.get_time_tags(label)
+            PlotUtils.draw_tags_regions(fig, label_time_tags)
+
+        figures.append(fig)
 
         if fft_params is not None and ("_acc" in sensor_name or "_mic" in sensor_name):
+            
+            odr = fft_params[1]
+            window_size = 256
+            overlap = 128
+            step = window_size
+
+            def compute_spectrogram(signal, fs, window_size, step):
+                n_windows = (len(signal) - window_size) // step + 1
+                spec = []
+                for i in range(n_windows):
+                    start = i * step
+                    end = start + window_size
+                    windowed = signal[start:end] * np.hanning(window_size)
+                    fft_vals = np.fft.rfft(windowed)
+                    power = np.abs(fft_vals) ** 2
+                    spec.append(power)
+                spec = np.array(spec).T # shape: [frequencies, time]
+                times = np.arange(n_windows) * step / fs
+                freqs = np.fft.rfftfreq(window_size, d=1/fs)
+                return freqs, times, 10 * np.log10(spec + 1e-12) # Convert to dB
+            
             if label is not None:
                 sw_tag_classes_labels = [value['label'] for value in self.get_sw_tag_classes().values()]
                 hw_tag_classes_labels = [value['label'] for value in self.get_hw_tag_classes().values()]
@@ -2135,148 +2147,299 @@ class HSDatalog_v2:
                 fileterd_cols = [c for c in cols.to_list() if c not in tag_classes_labels]
                 cols = fileterd_cols
             cc = ['X', 'Y', 'Z'] if (len(cols)) == 3 else ['X', 'Y'] if (len(cols)) == 2 else []
-            for i, c in enumerate(cols):
-                fig = plt.figure()
+            
+            if "_mic" in sensor_name:
+                freqs, times, spec = compute_spectrogram(dask_chunk[cols[1]].values, odr, window_size, step)
+                mic_fig = go.Figure(data=go.Heatmap(z=spec, x=times, y=freqs, colorscale='Viridis'))
+                mic_fig.update_layout(title=f"{sensor_name.upper()} - Spectrogram",
+                                    xaxis_title="Time (s)",
+                                    yaxis_title="Frequency (Hz)"
+                )
+                figures.append(mic_fig)
+            elif "_acc" in sensor_name:
+                axes = cols[1:]
+                specs = []
+                for axis in axes:
+                    freqs, times, spec = compute_spectrogram(dask_chunk[axis].values, odr, window_size, step)
+                    specs.append((axis, spec))
                 
-                if len(cols) == 1:
-                    plt.title(sensor_name)
-                else:
-                    plt.title(sensor_name + " [" + cc[i] + "]")
-                # extract the signal values as a NumPy array
-                signal = ss_data_frame[c].values
-                # create a spectrogram using matplotlib
-                plt.specgram(signal, Fs=fft_params[1])
+                acc_mag = np.sqrt(np.sum([dask_chunk[axis].values**2 for axis in axes], axis=0))
+                freqs, times, spec = compute_spectrogram(acc_mag, odr, window_size, step)
+                specs.append(("ACC Magnitude", spec))
 
-                plt.draw()
+                acc_fig = make_subplots(rows=len(specs), cols=1, shared_xaxes=True, subplot_titles=[f"{axis} - Spectrogram" for axis, _ in specs])
+                
+                for i, (axis, z) in enumerate(specs, start=1):
+                    acc_fig.add_trace(
+                        go.Heatmap(
+                            z=z, x=times, y=freqs, colorscale='Viridis',
+                            showscale=(i == len(specs)),  # Only last subplot gets colorbar
+                            colorbar=dict(title="dB") if i == len(specs) else None
+                        ),
+                        row=i, col=1)
+                    acc_fig.update_yaxes(title_text="Frequency (Hz)", row=i, col=1)
+            
+                acc_fig.update_layout(height=300*len(specs), title_text=f"{sensor_name.upper()} - Spectrogram", xaxis_title="Time (s)")
+                figures.append(acc_fig)
+
+        return figures
+
     # Plots Helper Functions ################################################################################################################
 
     # Plots Functions #######################################################################################################################
     
-    
-    def get_sensor_plot(self, sensor_name, sensor_status, start_time = 0, end_time = -1, label=None, which_tags = [], subplots=False, raw_flag = False, fft_plots = False):
+    def get_plot_threads(self):
+        """
+        Returns the list of threads used for plotting.
 
+        Returns:
+            list: A list of threads used for plotting.
+        """
+        return self.plot_threads
+
+    def close_plot_threads(self):
+        """
+        Closes all plot threads by joining them.
+        """
+        for t in self.plot_threads:
+            t.shutdown()
+
+    def __show_plot_in_browser(self, fig, comp_name, save_plot=False):
+        """
+        Display the given Plotly figure in a browser using the resampler.show_dash function with a dedicated free port.
+
+        Args:
+            fig (plotly.graph_objects.Figure): The Plotly figure to display.
+        """
+        import socket
+        import webbrowser
+        from plotly_resampler import FigureResampler
+        from dash import Dash, dcc, html
+
+        # Function to find a free port
+        def find_free_port():
+            with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                s.bind(('', 0))
+                return s.getsockname()[1]
+
+        # Find a free port
+        port = find_free_port()
+
+        # Create a resampler for the figure
+        resampler = FigureResampler(fig, default_n_shown_samples=1000)
+
+        # Save plots as HTML files if required
+        if save_plot:
+            html_file = os.path.join(self.get_acquisition_path(), f"{comp_name}.html")
+            resampler.write_html(html_file)
+
+        app = Dash(__name__)
+        app.title = f"{comp_name}"
+        
+        has_heatmap = any(isinstance(trace, go.Heatmap) for trace in fig.data)
+        if "_tof" in comp_name and has_heatmap:
+            app.layout = html.Div([
+                dcc.Graph(figure=fig, style={"height": "95vh"}),
+            ])
+        else:
+            app.layout = html.Div([
+                dcc.Graph(id="my-graph", figure=resampler, style={"height": "95vh"}),
+            ])
+            # Register the resampler callback
+            resampler.register_update_graph_callback(app, "my-graph")
+
+        pt = ServerThread(app, port)
+        pt.start()
+        self.plot_threads.append(pt)
+        
+        webbrowser.open(f"http://127.0.0.1:{port}")
+
+    def get_dask_df(self, comp_name, comp_status, start_time=0, end_time=-1, label=None, raw_flag=False):
+        from stdatalog_core.HSD.HSDatalog import HSDatalog
         try:
-            ss_data_frame = None
-            if sensor_status['enable']:
-                ss_data_frame = self.get_dataframe_batch(sensor_name, sensor_status, start_time, end_time, label is not None, raw_flag, which_tags)
+            labeled = label is not None
+            # Define the file path for the parquet file
+            file_path = os.path.join(self.get_acquisition_path(), f'{comp_name}.parquet')
+            # Convert data to parquet format if the file does not exist
+            if not os.path.exists(file_path):
+                HSDatalog.convert_dat_to_xsv(self, {comp_name:comp_status}, start_time, end_time, labeled, raw_flag, self.get_acquisition_path(), "PARQUET")
+            
+            # Read the parquet file into a Dask dataframe
+            dask_df = dd.read_parquet(file_path)
+            return dask_df
+        except Exception as err:
+            log.exception(err)
+            return None
 
-            if ss_data_frame is not None:
-
-                c_type = sensor_status["c_type"]
-                s_category = sensor_status.get("sensor_category")
-
-                if label is not None and not label in ss_data_frame.columns:
-                    log.warning("No [{}] annotation has been found in the selected acquisition".format(label))
-                    label = None
-
-                #Check for dim (nof plots)
-                if c_type == ComponentTypeEnum.SENSOR.value:
-                    dim = sensor_status.get("dim")
-                elif c_type == ComponentTypeEnum.ALGORITHM.value:
-                    pass
-                elif c_type == ComponentTypeEnum.ACTUATOR.value:                   
-                    telemetry_keys = self.__get_active_mc_telemetries_names(sensor_status, sensor_name)
-                    dim = len(telemetry_keys)
-                    keys_filter = ["Time"]
-                    keys_filter.extend([key.upper() for key in telemetry_keys if isinstance(key, str)])
-                    if label is not None:
-                        keys_filter.append(label)
-                    subplots = True
-                    ss_data_frame = ss_data_frame.filter(items=keys_filter)
-                cols = ss_data_frame.columns[1:]
-
-                if ss_data_frame is not None:
-                    if s_category is not None and s_category == SensorCategoryEnum.ISENSOR_CLASS_RANGING.value:
-                        resolution = sensor_status.get("resolution")
-                        if resolution is not None:
-                            res = int(resolution.split("x")[0])
-                            output_format = sensor_status.get("output_format")
-                            self.__plot_ranging_sensor(sensor_name, ss_data_frame, res, output_format)
-                    elif s_category is not None and s_category == SensorCategoryEnum.ISENSOR_CLASS_LIGHT.value:
-                        self.__plot_light_sensor(sensor_name, ss_data_frame, cols, dim, label)
-                    elif s_category is not None and s_category == SensorCategoryEnum.ISENSOR_CLASS_PRESENCE.value:
-                        software_compensation = sensor_status.get("software_compensation")
-                        embedded_compensation = sensor_status.get("embedded_compensation")
-                        self.__plot_presence_sensor(sensor_name, ss_data_frame, cols, label, software_compensation, embedded_compensation)
-                    else: #ISENSOR_CLASS_MEMS and ISENSOR_CLASS_AUDIO
-                        fft_params = None
-                        if fft_plots:
-                            odr = sensor_status.get('odr', 1)
-                            fft_params = (fft_plots, odr)
-                        self.__plot_mems_audio_sensor(sensor_name, ss_data_frame, cols, dim, subplots, label, raw_flag, sensor_status.get('unit'), fft_params)
+    def get_sensor_plot(self, sensor_name, sensor_status, start_time = 0, end_time = -1, label=None, which_tags = [], subplots=False, raw_flag = False, fft_plots = False, save_plots = False):
+        from stdatalog_core.HSD.HSDatalog import HSDatalog
+        try:
+            labeled = label is not None
+            # Define the file path for the parquet file
+            file_path = os.path.join(self.get_acquisition_path(), f'{sensor_name}.parquet')
+            # Convert data to parquet format (overwriting it if already exists)
+            HSDatalog.convert_dat_to_xsv(self, {sensor_name:sensor_status}, start_time, end_time, labeled, raw_flag, self.get_acquisition_path(), "PARQUET")
+            # Read the parquet file into a Dask dataframe
+            dask_df = None
+            if os.path.exists(file_path):
+                dask_df = dd.read_parquet(file_path)
             else:
-                log.error("Error extracting subsensor DataFrame {}".format(sensor_name))
-                raise DataExtractionError(sensor_name)
-            return True
-        except MemoryError:
-            log.error("Memory Error occoured! You should batch process your {} file".format(FileManager.encode_file_name(sensor_name)))
-            raise
-        except  ValueError as e:
-            print(e)
-            log.error("Value Error occoured! You should batch process your {} file".format(FileManager.encode_file_name(sensor_name)))
-            raise
-    
-    def get_algorithm_plot(self, component_name, component_status, start_time = 0, end_time = -1, label=None, which_tags = [], subplots=False, raw_flag = False):
-        try:
-            ss_data_frame = None
-            if component_status['enable']:
-                ss_data_frame = self.get_dataframe_batch(component_name, component_status, start_time, end_time, label is not None, raw_flag, which_tags)
-                
-            if ss_data_frame is not None:
-                algo_type = component_status.get("algorithm_type")
-                if algo_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
-                    s_dim = component_status.get("fft_length")
-                else:
-                    s_dim = component_status.get("dim")
-                #Tag columns check (if any)
-                if label is not None and len(ss_data_frame.columns) < s_dim + 1:
-                    log.warning("No [{}] annotation has been found in the selected acquisition".format(label))
-                    label = None
+                return
 
-                #Tag columns check (selected label exists?)
-                if label is not None and not label in ss_data_frame.columns:
-                    log.warning("No {} label found in selected acquisition".format(label))
-                    label = None
+            # Uncomment the following lines to log the number of rows and min/max values for each row group
+            # parquet_file = pq.ParquetFile(file_path)
+            # # Log the number of rows and min/max values for each row group
+            # for i in range(parquet_file.metadata.num_row_groups):
+            #     user_id_col_stats = parquet_file.metadata.row_group(i).column(0).statistics
+            #     print("---------------------------------------------------------------------------------------------")
+            #     print(f"Processing sensor: {sensor_name}")
+            #     print(f"Number of row groups: {parquet_file.metadata.num_row_groups}")
+            #     print(f"row group: {i}, num of rows: {user_id_col_stats.num_values}, min: {user_id_col_stats.min}, max: {user_id_col_stats.max}")
+            #     print("---------------------------------------------------------------------------------------------")
+
+            # Get the acquisition label classes
+            acq_label_classes = self.get_acquisition_label_classes()
+            # Filter columns to plot
+            columns_to_plot = [item for item in dask_df.columns if item not in acq_label_classes]
+
+            if save_plots:
+                # Define the output directory for saving plots
+                output_dir = "plots"
+                os.makedirs(output_dir, exist_ok=True)
+            
+            sensor_category = sensor_status.get("sensor_category")
+            figures = []
+
+            # Iterate over each chunk of the Dask dataframe
+            for chunk in dask_df.to_delayed():
+                chunk = chunk.compute()
+                
+                # Uncomment the following lines to log the size of each chunk
+                # with open("dask_log.txt", "a") as log_file:
+                #     log_file.write(f"Processing chunk for sensor: {sensor_name}, size: {len(chunk)} rows, partitions: {dask_df.partitions}\n")
+                
+                if sensor_category == SensorCategoryEnum.ISENSOR_CLASS_RANGING.value:
+                    resolution = sensor_status.get("resolution")
+                    if resolution is not None:
+                        res = int(resolution.split("x")[0])
+                        output_format = sensor_status.get("output_format")
+                        figures = self.__plot_ranging_sensor(sensor_name, chunk, res, output_format)
+                elif sensor_category == SensorCategoryEnum.ISENSOR_CLASS_LIGHT.value:
+                    fig = self.__plot_light_sensor(sensor_name, chunk, columns_to_plot, label)
+                    figures.append(fig)
+                    pass
+                elif sensor_category == SensorCategoryEnum.ISENSOR_CLASS_PRESENCE.value:
+                    figures = self.__plot_presence_sensor(sensor_name, chunk, columns_to_plot, label, sensor_status.get("software_compensation"), sensor_status.get("embedded_compensation"))
+                    pass
+                else: # ISENSOR_CLASS_MEMS and ISENSOR_CLASS_AUDIO
+                    fft_params = None
+                    if fft_plots:
+                        odr = sensor_status.get('odr', 1)
+                        fft_params = (fft_plots, odr)
+                    figures = self.__plot_mems_audio_sensor(sensor_name, chunk, columns_to_plot, len(columns_to_plot)-1, subplots, label, raw_flag, sensor_status.get('unit'), fft_params)
+                
+                for fig in figures:
+                    self.__show_plot_in_browser(fig, sensor_name, save_plot=save_plots)
+            
+            # Delete the Parquet file after processing
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
+        except MissingISPUOutputDescriptorException as ispu_err:
+            # Handle missing ISPU output descriptor exception
+            log.error(ispu_err)
+            log.warning("Copy the right ISPU output descriptor file in your \"{}\" acquisition folder renamed as \"ispu_output_format.json\"".format(self.get_acquisition_path()))
+        except Exception as err:
+            log.exception(err)
+    
+    def get_actuator_plot(self, actuator_name, actuator_status, start_time = 0, end_time = -1, label=None, which_tags = [], subplots=True, raw_flag = False, save_plots = False):
+        self.get_sensor_plot(actuator_name, actuator_status, start_time, end_time, label, which_tags, True, raw_flag, save_plots=save_plots)
+
+    def get_algorithm_plot(self, algorithm_name, algorithm_status, start_time = 0, end_time = -1, label=None, which_tags = [], subplots=False, raw_flag = False):
+        from stdatalog_core.HSD.HSDatalog import HSDatalog
+        try:
+            labeled = label is not None
+            # Define the file path for the parquet file
+            file_path = os.path.join(self.get_acquisition_path(), f'{algorithm_name}.parquet')
+            # Convert data to parquet format (overwriting it if already exists)
+            HSDatalog.convert_dat_to_xsv(self, {algorithm_name:algorithm_status}, start_time, end_time, labeled, raw_flag, self.get_acquisition_path(), "PARQUET")
+            # Read the parquet file into a Dask dataframe
+            dask_df = None
+            if os.path.exists(file_path):
+                dask_df = dd.read_parquet(file_path)
+            else:
+                return
+
+            if dask_df is not None:
+                algo_type = algorithm_status.get("algorithm_type")
+                if algo_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
+                    s_dim = algorithm_status.get("fft_length")
+                else:
+                    s_dim = algorithm_status.get("dim")
+                
+                # Get the acquisition label classes
+                acq_label_classes = self.get_acquisition_label_classes()
+                # Filter columns to plot
+                columns_to_plot = [item for item in dask_df.columns if item not in acq_label_classes]
                 
                 if algo_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
-                    fft_lenght = s_dim
+                    fft_length = s_dim
                     
-                    if "fft_sample_freq" in component_status:
-                        fft_sample_freq = component_status["fft_sample_freq"]
-                    else:
+                    fft_sample_freq = algorithm_status.get("fft_sample_freq")
+                    if fft_sample_freq is None:
                         log.error("FFT Sample Freq. unknown")
                         raise MissingPropertyError("fft_sample_freq")
                     
-                    fig = plt.figure()
-                    
-                    df_array = ss_data_frame.iloc[: , 1:].T.to_numpy(dtype="float")                    
-                    y_value = np.square(df_array)
-                    y_value =  y_value / (fft_lenght * fft_sample_freq)
-                    y_value =  10 * np.log10(y_value)
-                    
-                    y_value = np.flipud(y_value)
-                    
-                    plt.imshow(y_value, cmap="viridis", aspect='auto', extent=[0,len(y_value[0]),0,fft_sample_freq/2])
-                    plt.ylabel('Hz')
-                    plt.tight_layout()
-                    plt.colorbar()
-                    plt.title(component_name)
-                    # plt.xlabel('Time (s)') # TODO
-                    # plt.legend(loc='upper left') # TODO
-                    plt.draw()
+                    for chunk in dask_df.to_delayed():
+                        chunk = chunk.compute()
+
+                        # Prepare data for spectrogram
+                        df_array = chunk.iloc[:, 1:].T.to_numpy(dtype="float")
+                        y_value = np.square(df_array)
+                        y_value = y_value / (fft_length * fft_sample_freq)
+                        y_value = 10 * np.log10(y_value)
+                        
+                        freqs = np.linspace(0, fft_sample_freq / 2, y_value.shape[0])
+                        # Plotly spectrogram
+                        fig = go.Figure(
+                            data=go.Heatmap(
+                                z=y_value,
+                                y=freqs,
+                                colorscale="Viridis",
+                                colorbar=dict(
+                                    title="dB",
+                                    len=1.0,      # Full subplot height
+                                    y=0.5,        # Centered vertically
+                                    yanchor='middle'
+                                )
+                            )
+                        )
+                        fig.update_layout(
+                            title=f"{algorithm_name.upper()} - Spectrogram",
+                            # xaxis_title="Time (s)", #TODO
+                            yaxis_title="Frequency (Hz)",
+                            height=600
+                        )
+
+                        self.__show_plot_in_browser(fig, algorithm_name)
                 else:
                     log.error("Algorithm type selected is not supported.")
             
             else:
                 log.error("Empty DataFrame extracted.")
+            
+            # Delete the Parquet file after processing
+            if os.path.exists(file_path):
+                os.remove(file_path)
+
         except MissingPropertyError as exc:
             log.error("Missing {} Property Error!".format(exc))
             raise
         except MemoryError:
-            log.error("Memory Error occoured! You should batch process your {} file".format(FileManager.encode_file_name(component_name)))
+            log.error("Memory Error occoured! You should batch process your {} file".format(FileManager.encode_file_name(algorithm_name)))
             raise
         except  ValueError:
-            log.error("Value Error occoured! You should batch process your {} file".format(FileManager.encode_file_name(component_name)))
+            log.error("Value Error occoured! You should batch process your {} file".format(FileManager.encode_file_name(algorithm_name)))
             raise
     # Plots Functions #######################################################################################################################
 
@@ -2322,7 +2485,7 @@ class HSDatalog_v2:
         return CLI.select_item("Data File", dat_file_list)
 
     def prompt_label_select_CLI(self, label_list = None):
-        if label_list is None:
+        if label_list is None or len(label_list) == 0:
             label_list = self.get_acquisition_label_classes()
         return CLI.select_item("Labels", label_list)
 

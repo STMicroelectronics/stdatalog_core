@@ -30,6 +30,7 @@ from stdatalog_core.HSD.utils.sensors_utils import SensorTypeConversion
 from stdatalog_core.HSD_utils.converters import NanoedgeCSVWriter, HSDatalogConverter
 from stdatalog_core.HSD_utils.exceptions import *
 import stdatalog_core.HSD_utils.logger as logger
+from stdatalog_pnpl.DTDL.device_template_manager import DeviceCatalogManager
 from stdatalog_pnpl.DTDL.dtdl_utils import AlgorithmTypeEnum, ComponentTypeEnum, SensorCategoryEnum
 
 log = logger.get_logger(__name__)
@@ -44,7 +45,7 @@ class HSDatalog:
     # A class-level attribute that sets the default chunk size for data samples
     DEFAULT_SAMPLES_CHUNK_SIZE = 10000000
 
-    def create_hsd(self, acquisition_folder = None, device_config = None):
+    def create_hsd(self, acquisition_folder = None, device_config = None, update_catalog = True):
         """
         Creates an instance of the appropriate HSDatalog version based on the provided device configuration or the data in the acquisition folder.
 
@@ -64,7 +65,7 @@ class HSDatalog:
                 hsd = HSDatalog_v1()
             # If the device configuration contains a schema version starting with "2", create HSDatalog version 2
             elif "schema_version" in device_config and device_config["schema_version"].split('.')[0] == "2":
-                hsd = HSDatalog_v2()
+                hsd = HSDatalog_v2(update_catalog=update_catalog)
             # Return the created HSDatalog instance
             return hsd
         
@@ -931,7 +932,9 @@ class HSDatalog:
             if comp_status["is_first_chunk"]:
                 comp_status["is_first_chunk"] = False
 
-            if comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value or comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value: #NO BATCHES FOR ACTUATORS AND ALGORITHMS
+            #NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
+            if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value \
+                or (comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value and "odr" not in comp_status):
                 is_last_chunk = True
                 log.info("--> Conversion completed")
             
@@ -1021,8 +1024,10 @@ class HSDatalog:
             # After the first chunk, update the status to no longer be the first chunk.
             if comp_status["is_first_chunk"]:
                 comp_status["is_first_chunk"] = False
-
-            if comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value or comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value: #NO BATCHES FOR ACTUATORS AND ALGORITHMS
+            
+            #NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
+            if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value \
+                or (comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value and "odr" not in comp_status): 
                 is_last_chunk = True
                 log.info("--> Conversion completed")
             
@@ -1176,7 +1181,9 @@ class HSDatalog:
             if comp_status["is_first_chunk"]:
                 comp_status["is_first_chunk"] = False
 
-            if comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value or comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value: #NO BATCHES FOR ACTUATORS AND ALGORITHMS
+            #NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
+            if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value \
+                or (comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value and "odr" not in comp_status):
                 is_last_chunk = True
                 log.info("--> Conversion completed")
             
@@ -1268,7 +1275,9 @@ class HSDatalog:
             if comp_status["is_first_chunk"]:
                 comp_status["is_first_chunk"] = False
 
-            if comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value or comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value: #NO BATCHES FOR ACTUATORS AND ALGORITHMS
+            #NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
+            if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value \
+                or (comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value and "odr" not in comp_status):
                 is_last_chunk = True
                 log.info("--> Conversion completed")
             
@@ -1461,67 +1470,75 @@ class HSDatalog:
             # Retrieve the data frame for the current chunk.
             df = hsd.get_dataframe_batch(comp_name, comp_status, next_start_time, next_end_time, labeled, raw_data, which_tags)
             
-            if start_time == next_start_time:
-                # Find the index of the row with the nearest timestamp to next_start_time
-                index = HSDatalog.find_nearest_idx(df['Time'].values, next_start_time)
-                # Trim the DataFrame if specific start_time is selected
-                df = df.iloc[index:]
+            if df is not None:
+                if start_time == next_start_time:
+                    # Find the index of the row with the nearest timestamp to next_start_time
+                    index = HSDatalog.find_nearest_idx(df['Time'].values, next_start_time)
+                    # Trim the DataFrame if specific start_time is selected
+                    df = df.iloc[index:]
 
-            if end_time == next_end_time:
-                if df is not None:
-                    # Trim the DataFrame if specific end_time is selected
-                    index = HSDatalog.find_nearest_idx(df['Time'].values, next_end_time)
-                    df = df.iloc[:index]
+                if end_time == next_end_time:
+                    if df is not None:
+                        # Trim the DataFrame if specific end_time is selected
+                        index = HSDatalog.find_nearest_idx(df['Time'].values, next_end_time)
+                        df = df.iloc[:index]
 
-            # After the first chunk, update the status to no longer be the first chunk.
-            if comp_status["is_first_chunk"]:
-                comp_status["is_first_chunk"] = False
-            
-            log.debug("df extracted")
-            if comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value or comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value: #NO BATCHES FOR ACTUATORS AND ALGORITHMS
-                if comp_status.get("algorithm_type") == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
-                    no_timestamps = True
-                is_last_chunk = True
-                log.info("--> Conversion completed")
-
-            if df is not None and len(df) > 0:
-                # Check if this is the last chunk based on the end time and the last timestamp in the dataframe.
-                if end_time != -1 and df.iloc[-1,0] >= end_time:
+                # After the first chunk, update the status to no longer be the first chunk.
+                if comp_status["is_first_chunk"]:
+                    comp_status["is_first_chunk"] = False
+                
+                log.debug("df extracted")
+                #NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
+                if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value \
+                    or (comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value and "odr" not in comp_status):
+                    if comp_status.get("algorithm_type") == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
+                        no_timestamps = True
                     is_last_chunk = True
                     log.info("--> Conversion completed")
-                # If timestamps should not be included, drop the 'Time' column from the dataframe.
-                if no_timestamps:
-                    df.drop("Time", axis=1, inplace=True)
-                # Determine the file mode ('write' for the first chunk, 'append' for subsequent chunks).
-                file_mode = 'w' if next_start_time == (start_time or 0) else 'a'
-                log.debug(f"df to {file_format} STARTED...")
-                # Convert the data frame to the specified file format and save it to the file path.
-                if file_format == 'TXT':
-                    HSDatalogConverter.to_txt(df, sensor_file_path, mode=file_mode)
-                elif file_format == 'CSV':
-                    HSDatalogConverter.to_csv(df, sensor_file_path, mode=file_mode)
-                elif file_format == 'TSV':
-                    HSDatalogConverter.to_tsv(df, sensor_file_path, mode=file_mode)
-                elif file_format == 'PARQUET':
-                    HSDatalogConverter.to_parquet(df, sensor_file_path, mode=file_mode)
-                log.debug(f"df to {file_format} COMPLETED!")
 
-                # If the dataframe is empty, mark the last chunk and log completion.
-                if len(df) == 0:
-                    is_last_chunk = True
-                    log.info("--> Conversion completed")
+                if df is not None and len(df) > 0:
+                    # Check if this is the last chunk based on the end time and the last timestamp in the dataframe.
+                    if end_time != -1 and df.iloc[-1,0] >= end_time:
+                        is_last_chunk = True
+                        log.info("--> Conversion completed")
+                    # If timestamps should not be included, drop the 'Time' column from the dataframe.
+                    if no_timestamps:
+                        df.drop("Time", axis=1, inplace=True)
+                    # Determine the file mode ('write' for the first chunk, 'append' for subsequent chunks).
+                    file_mode = 'w' if next_start_time == (start_time or 0) else 'a'
+                    log.debug(f"df to {file_format} STARTED...")
+                    # Convert the data frame to the specified file format and save it to the file path.
+                    if file_format == 'TXT':
+                        HSDatalogConverter.to_txt(df, sensor_file_path, mode=file_mode)
+                    elif file_format == 'CSV':
+                        HSDatalogConverter.to_csv(df, sensor_file_path, mode=file_mode)
+                    elif file_format == 'TSV':
+                        HSDatalogConverter.to_tsv(df, sensor_file_path, mode=file_mode)
+                    elif file_format == 'PARQUET':
+                        HSDatalogConverter.to_parquet(df, sensor_file_path, mode=file_mode)
+                    log.debug(f"df to {file_format} COMPLETED!")
+
+                    # If the dataframe is empty, mark the last chunk and log completion.
+                    if len(df) == 0:
+                        is_last_chunk = True
+                        log.info("--> Conversion completed")
+                    else:
+                        log.debug("--> Chunk Conversion completed")
+                        # Increment the time offset by the chunk time size for the next iteration.
+                        # This sets up the start time for the next chunk.
+                        next_start_time = float(df.iloc[-1,0])
+                        # Calculate the end time for the next chunk.
+                        next_end_time = next_start_time + chunk_time_size
                 else:
-                    log.debug("--> Chunk Conversion completed")
-                    # Increment the time offset by the chunk time size for the next iteration.
-                    # This sets up the start time for the next chunk.
-                    next_start_time = float(df.iloc[-1,0])
-                    # Calculate the end time for the next chunk.
-                    next_end_time = next_start_time + chunk_time_size
+                    # If no data frame or empty dataframe is returned, mark the last chunk.
+                    # This could happen if there is no more data to process or if an error occurred.
+                    is_last_chunk = True
+                    log.info("--> Conversion completed")
+
             else:
-                # If no data frame or empty dataframe is returned, mark the last chunk.
-                # This could happen if there is no more data to process or if an error occurred.
+                # If no dataframe is returned, mark the last chunk and log completion.
                 is_last_chunk = True
-                log.info("--> Conversion completed")
+                log.info("--> Empty DataFrame returned, Conversion completed")
         
         # Reset the status conversion side information for the component status.
         HSDatalog.reset_status_conversion_side_info(comp_status, ioffset)
@@ -1884,7 +1901,9 @@ class HSDatalog:
                     index = HSDatalog.find_nearest_idx(df['Time'].values, next_end_time)
                     df = df.iloc[:index]
 
-            if comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value or comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value: #NO BATCHES FOR ACTUATORS AND ALGORITHMS
+            #NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
+            if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value \
+                or (comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value and "odr" not in comp_status):
                 if comp_status.get("algorithm_type") == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
                     with_times = False
                 is_last_chunk = True
@@ -2050,7 +2069,9 @@ class HSDatalog:
                     index = HSDatalog.find_nearest_idx(df['Time'].values, next_end_time)
                     df = df.iloc[:index]
 
-            if comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value or comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value: #NO BATCHES FOR ACTUATORS AND ALGORITHMS
+            #NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
+            if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value \
+                or (comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value and "odr" not in comp_status):
                 is_last_chunk = True
                 log.info("--> Conversion completed")
 
@@ -2197,7 +2218,9 @@ class HSDatalog:
                     index = HSDatalog.find_nearest_idx(df['Time'].values, next_end_time)
                     df = df.iloc[:index]
 
-            if comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value or comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value: #NO BATCHES FOR ACTUATORS AND ALGORITHMS
+            #NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
+            if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value \
+                or (comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value and "odr" not in comp_status):
                 is_last_chunk = True
                 log.info("--> Conversion completed")
             
@@ -2378,7 +2401,9 @@ class HSDatalog:
                 if i == 0:
                     df = hsd.get_dataframe_batch(comp_names[i], comp_status[i], next_start_time, next_end_time, use_datalog_tags, raw_data)
 
-                    if comp_status[i]["c_type"] == ComponentTypeEnum.ACTUATOR.value or comp_status[i]["c_type"] == ComponentTypeEnum.ALGORITHM.value: #NO BATCHES FOR ACTUATORS AND ALGORITHMS
+                    #NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
+                    if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value \
+                        or (comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value and "odr" not in comp_status):
                         if comp_status[i].get("algorithm_type") == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
                             with_times = False
                         is_last_chunk = True
@@ -2900,16 +2925,31 @@ class HSDatalog:
         if "c_type" in comp_status:
             c_type = comp_status["c_type"]
             comp_status["is_first_chunk"] = True
-            if c_type == ComponentTypeEnum.SENSOR.value or c_type == ComponentTypeEnum.ACTUATOR.value:
+            if c_type == ComponentTypeEnum.SENSOR.value:
                 hsd.get_sensor_plot(comp_name, comp_status, start_time, end_time, label = label, which_tags = which_tags, subplots = subplots, raw_flag = raw_data, fft_plots = fft_plots)
             elif c_type == ComponentTypeEnum.ALGORITHM.value:
                 hsd.get_algorithm_plot(comp_name, comp_status, start_time, end_time, label = label, which_tags = which_tags, subplots = subplots, raw_flag = raw_data)
+            elif c_type == c_type == ComponentTypeEnum.ACTUATOR.value:
+                hsd.get_actuator_plot(comp_name, comp_status, start_time, end_time, label = label, which_tags = which_tags, subplots = subplots, raw_flag = raw_data)
         else:
             if c_type is None:
                 log.exception("Missing \"c_type\" value in your device status")
             raise
         # Reset the status conversion side information for the component status.
         HSDatalog.reset_status_conversion_side_info(comp_status, ioffset)
+
+    @staticmethod
+    def close_plot_threads(hsd):
+        """
+        Closes any active plot threads associated with the HSDatalog instance.
+
+        :param hsd: The HSDatalog object instance.
+
+        This method is used to ensure that all plotting threads are properly terminated when no longer needed.
+        Only works for HSDatalog_v2 instances.
+        """
+        if isinstance(hsd, HSDatalog_v2):
+            hsd.close_plot_threads()
 
     @staticmethod
     def get_sensor_file_path(sensor_name: str, output_folder: str):

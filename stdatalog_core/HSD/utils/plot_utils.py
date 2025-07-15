@@ -12,8 +12,6 @@
 # ******************************************************************************
 #
 
-from collections import OrderedDict
-import matplotlib.pyplot as plt
 import numpy as np
 
 class PlotUtils:
@@ -22,50 +20,66 @@ class PlotUtils:
     lines_colors = ['#e6007e', '#a4c238', '#3cb4e6', '#ef4f4f', '#46b28e', '#e8ce0e', '#60b562', '#f99e20', '#41b3ba']
 
     @staticmethod
-    def draw_line(plt, ss_data_frame, idx, color, label, picker = False):
-        if picker:
-            line, = plt.plot(ss_data_frame['Time'], ss_data_frame.iloc[:, idx + 1], color=color, label=label, picker=5)
-        else:
-            line, = plt.plot(ss_data_frame['Time'], ss_data_frame.iloc[:, idx + 1], color=color, label=label)
-        return line
+    def draw_tags_regions(fig, label_time_tags):
+        # Add vertical rectangles for labeled data
+        for tt in label_time_tags:
+            fig.add_vrect(x0=tt["time_start"], x1=tt["time_end"], 
+                            annotation_text=tt["label"], annotation_position="top left",
+                            fillcolor="green", opacity=0.25, line_width=2)
 
     @staticmethod
-    def draw_tag_lines(plt, ss_data_frame, label, alpha=0.9):
-        true_tag_idxs = ss_data_frame[label].loc[lambda x: x== True].index
-        tag_groups = np.split(true_tag_idxs, np.where(np.diff(true_tag_idxs) != 1)[0]+1)
-        for i in range(len(tag_groups)):
-            start_tag_time = ss_data_frame.at[tag_groups[i][0],'Time']
-            end_tag_time = ss_data_frame.at[tag_groups[i][-1],'Time']
-            plt.axvspan(start_tag_time, end_tag_time, facecolor='1', alpha=alpha)
-            plt.axvline(x=start_tag_time, color='g', label= "Start " + label)
-            plt.axvline(x=end_tag_time, color='r', label= "End " + label)
-    
-    @staticmethod
-    def set_plot_time_label(axs, fig, dim):
-        if dim > 1:
-            for ax in axs.flat:
-                ax.set(xlabel = 'Time (s)')
-            for ax in fig.get_axes():
-                ax.label_outer()
-        else:
-            axs[0].set(xlabel = 'Time (s)')
-    
-    @staticmethod
-    def set_legend(ax):
-        old_handles, old_labels = ax.get_legend_handles_labels()
-        fileterd_labels = list(OrderedDict.fromkeys(old_labels))
-        filtered_handles = old_handles[:len(fileterd_labels)]
-        ax.legend(handles=filtered_handles, labels=fileterd_labels, loc='upper left', ncol=1)
+    def draw_regions(fig, ss_data_frame, label, color, opacity=0.5, row=None, col=None, show_label=True):
+        """
+        Draw regions on a Plotly figure based on flagged data, with support for subplots.
 
-    @staticmethod
-    def draw_regions(plt, ss_data_frame, label, color, edgecolor, alpha, hatch):
-        true_flag_idxs = ss_data_frame[label].loc[lambda x: x== 1.0].index
-        if len(true_flag_idxs)>0:
-            flag_groups = np.split(true_flag_idxs, np.where(np.diff(true_flag_idxs) != 1)[0]+1)
+        Args:
+            fig (Figure): The Plotly figure to draw on.
+            ss_data_frame (DataFrame): The data frame containing the data.
+            label (str): The column name in the data frame to use for flags.
+            color (str): The color of the region (e.g., 'rgba(255,0,0,0.5)').
+            opacity (float): The opacity of the region (default is 0.5).
+            row (int, optional): The row of the subplot to draw on (if using subplots).
+            col (int, optional): The column of the subplot to draw on (if using subplots).
+        """
+
+        true_flag_idxs = ss_data_frame[label].loc[lambda x: x == 1.0].index
+        if len(true_flag_idxs) > 0:
+            flag_groups = np.split(true_flag_idxs, np.where(np.diff(true_flag_idxs) != 1)[0] + 1)
             for i in range(len(flag_groups)):
-                start_flag_time = ss_data_frame.at[flag_groups[i][0],'Time']
-                end_flag_time = ss_data_frame.at[flag_groups[i][-1],'Time']
-                plt.axvspan(start_flag_time, end_flag_time, facecolor=color, edgecolor=edgecolor, alpha=alpha, hatch=hatch)
+                start_flag_time = ss_data_frame.at[flag_groups[i][0], 'Time']
+                end_flag_time = ss_data_frame.at[flag_groups[i][-1], 'Time']
+                
+                # Determine xref and yref based on subplot row and col
+                xref = f"x{col}" if col else "x"
+                yref = f"y{row}" if row else "y"
+
+                fig.add_vrect(
+                    x0=start_flag_time,
+                    x1=end_flag_time,
+                    fillcolor=color,
+                    opacity=opacity,
+                    line_width=0,
+                    annotation_text = label if show_label else "",
+                    annotation_position="top left",
+                    xref=xref,
+                    yref=yref,
+                    layer="below"
+                    )
+            
+            # Add a legend item with a square and the label
+            fig.add_trace(
+                dict(
+                    type="scatter",
+                    x=[None],  # Dummy data for the legend
+                    y=[None],
+                    mode="markers",
+                    marker=dict(size=10, color=color, symbol="square"),
+                    name=label,
+                    showlegend=True,
+                    legendgroup=label,
+                    hoverinfo="skip"
+                )
+            )
 
     @staticmethod
     def darken_color(color_hex, percent):

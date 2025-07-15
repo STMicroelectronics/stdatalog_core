@@ -108,7 +108,7 @@ class SensorAcquisitionThread(Thread):
                     res = self.sensor_data_file.write(sensor_data)
 
 class HSDLink:
-    def create_hsd_link(self, dev_com_type: str = 'st_hsd', acquisition_folder = None, plug_callback = None, unplug_callback = None):
+    def create_hsd_link(self, dev_com_type: str = 'st_hsd', acquisition_folder = None, plug_callback = None, unplug_callback = None, update_catalog = True):
         """
         Creates an instance of HSDLink based on the communication type.
 
@@ -125,7 +125,7 @@ class HSDLink:
         
         if dev_com_type == 'st_hsd':
             try:
-                hsd_link = HSDLink_v2(self.dev_com_type, self.acquisition_folder, plug_callback, unplug_callback)
+                hsd_link = HSDLink_v2(self.dev_com_type, self.acquisition_folder, plug_callback, unplug_callback, update_catalog)
                 if hsd_link.nof_connected_devices == 0:
                     log.warning("No HSDatalog_v2 devices connected!")
                     self.is_vdatalog = True
@@ -139,7 +139,7 @@ class HSDLink:
             # time.sleep(2)
 
             try:
-                hsd_link = HSDLink_v2_Serial("st_serial_datalog", self.acquisition_folder)
+                hsd_link = HSDLink_v2_Serial("st_serial_datalog", self.acquisition_folder, update_catalog)
                 self.dev_com_type = "st_serial_datalog"
                 if hsd_link.nof_connected_devices == 0:
                     log.warning("No Vanilla Datalog devices connected!")

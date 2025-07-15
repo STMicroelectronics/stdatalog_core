@@ -32,10 +32,29 @@
 <div class="col-sm-12 col-lg-8">
 <h1 id="update-history">Update History</h1>
 <div class="collapse">
-<input type="checkbox" id="collapse-section2" checked aria-hidden="true"> <label for="collapse-section2" aria-hidden="true">v1.1.0 / 9-Apr-25</label>
+<input type="checkbox" id="collapse-section3" checked aria-hidden="true"> <label for="collapse-section3" aria-hidden="true">v1.2.0 / 20-Jun-25</label>
 <div>
 <h2 id="main-changes">Main Changes</h2>
 <h3 id="maintenance-release">Maintenance Release</h3>
+<ul>
+<li>Added support to Python 3.13</li>
+<li>Removed dependency from matplotlib: use Parquet + Plotly (wResampler) + Dash as default for HSDatalog_v2 plots</li>
+<li>Updated type_conversion, managing float_t, double_t, int_24_t, uint24_t</li>
+<li>Updated ACTUATOR components and properties management</li>
+<li>Updated ToF plot: added ranging distance value for each zone + automatic time scrolling animation</li>
+<li>New USB catalog management: sync/update with the online catalog</li>
+<li>Moved query_dtdl_model from DeviceTemplateManager to DeviceCatalogManager class</li>
+<li>Fixed data conversion in batch with dummy data (or spts = 0)</li>
+<li>Fixed empty conversion job from not supported algorithm (i.e.: ai_motor_classifier)</li>
+<li>Integration of new staiotcraft_sdk library version</li>
+</ul>
+</div>
+</div>
+<div class="collapse">
+<input type="checkbox" id="collapse-section2" aria-hidden="true"> <label for="collapse-section2" aria-hidden="true">v1.1.0 / 9-Apr-25</label>
+<div>
+<h2 id="main-changes-1">Main Changes</h2>
+<h3 id="maintenance-release-1">Maintenance Release</h3>
 <ul>
 <li><strong>Added macos support.</strong></li>
 <li><strong>Updated libhs_datalog_v2 libraries for all the supported OS.</strong>
@@ -54,7 +73,7 @@
 <div class="collapse">
 <input type="checkbox" id="collapse-section1" aria-hidden="true"> <label for="collapse-section1" aria-hidden="true">v1.0.0 / 17-Jan-25</label>
 <div>
-<h2 id="main-changes-1">Main Changes</h2>
+<h2 id="main-changes-2">Main Changes</h2>
 <h3 id="first-official-release">First official release</h3>
 </div>
 </div>
