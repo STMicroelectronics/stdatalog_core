@@ -1354,7 +1354,7 @@ class HSDLink:
         return hsd_link.stop_log(device_id)
         
     @staticmethod
-    def start_log(hsd_link, device_id, sub_folder = True):
+    def start_log(hsd_link, device_id, sub_folder = True, interface = 1, acq_folder = None, save_files = True):
         """
         Starts the logging on the device.
 
@@ -1366,8 +1366,8 @@ class HSDLink:
         if isinstance(hsd_link, HSDLink_v1):
             return hsd_link.start_log(device_id)
         else:
-            return hsd_link.start_log(device_id, sub_folder=sub_folder)
-        
+            return hsd_link.start_log(device_id, interface=interface, acq_folder=acq_folder, sub_folder=sub_folder, save_files=save_files)
+
     @staticmethod
     def switch_bank(hsd_link, device_id):
         """

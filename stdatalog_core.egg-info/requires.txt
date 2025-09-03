@@ -1,4 +1,4 @@
-stdatalog_pnpl==1.2.0
+stdatalog_pnpl==1.2.1
 numpy==2.2.4
 pyserial==3.5
 pandas==2.2.3

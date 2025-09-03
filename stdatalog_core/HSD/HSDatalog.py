@@ -16,6 +16,7 @@
 #
 
 
+import gc
 import os
 import enum
 import numpy as np
@@ -89,13 +90,16 @@ class HSDatalog:
         return hsd
     
     @staticmethod
-    def validate_hsd_folder(acquisition_folder) -> HSDVersion:
+    def validate_hsd_folder(acquisition_folder:str) -> HSDVersion:
         """
         Validates the HSD folder by checking for specific files and returns the HSD version.
 
         :param acquisition_folder (str): The path to the acquisition folder.
         :return HSDVersion: The HSD version based on the files found in the acquisition folder.
         """
+        if not os.path.exists(acquisition_folder):
+            log.error(f"Invalid acquisition folder path: {acquisition_folder}. Check formatting.")
+            return HSDatalog.HSDVersion.INVALID
         # If an acquisition folder is provided, proceed with initialization.
         if acquisition_folder is not None:
             # Attempt to find and load the device configuration from the acquisition folder.
@@ -1460,6 +1464,12 @@ class HSDatalog:
         next_end_time = time_offset+chunk_time_size
         # Mark the first chunk to handle any initial conditions.
         comp_status["is_first_chunk"] = True
+        if file_format == 'PARQUET':
+            chunk_idx = 0
+            parquet_chunk_paths = []
+            first = True
+            writer = None
+            output_parquet_file = sensor_file_path + ".parquet"
         while not is_last_chunk:
             # Adjust the chunk size if the end time is specified and the current chunk exceeds it.
             if end_time != -1 and next_end_time > end_time:
@@ -1515,7 +1525,11 @@ class HSDatalog:
                     elif file_format == 'TSV':
                         HSDatalogConverter.to_tsv(df, sensor_file_path, mode=file_mode)
                     elif file_format == 'PARQUET':
-                        HSDatalogConverter.to_parquet(df, sensor_file_path, mode=file_mode)
+                        chunk_file = f"{sensor_file_path}_chunk{chunk_idx}.parquet"
+                        # HSDatalogConverter.to_parquet(df, chunk_file, mode='w')
+                        HSDatalogConverter.to_parquet(df, chunk_file)
+                        parquet_chunk_paths.append(chunk_file)
+                        chunk_idx += 1
                     log.debug(f"df to {file_format} COMPLETED!")
 
                     # If the dataframe is empty, mark the last chunk and log completion.
@@ -1539,7 +1553,35 @@ class HSDatalog:
                 # If no dataframe is returned, mark the last chunk and log completion.
                 is_last_chunk = True
                 log.info("--> Empty DataFrame returned, Conversion completed")
-        
+
+        if file_format == 'PARQUET':
+            if len(parquet_chunk_paths) == 1:
+                # If only one chunk file was created, rename it to the final output file.
+                os.rename(parquet_chunk_paths[0], output_parquet_file)
+            elif len(parquet_chunk_paths) > 1:
+                # If multiple chunk files were created, merge them into a single Parquet file.
+                log.info(f"Merging {len(parquet_chunk_paths)} Parquet chunk files into {output_parquet_file}")
+                # Use PyArrow to read and write Parquet files.
+                import pyarrow.parquet as pq
+                for chunk_file in parquet_chunk_paths:
+                    log.debug(f"Processing chunk file: {chunk_file}")
+                    # Read the chunk file and append it to the output Parquet file.
+                    pf = pq.ParquetFile(chunk_file)
+                    for rg in range(pf.num_row_groups):
+                        table = pf.read_row_group(rg)
+                        if first:
+                            writer = pq.ParquetWriter(output_parquet_file, table.schema)
+                            first = False
+                        writer.write_table(table)
+                    del pf  # Ensure file handle is closed
+                if writer is not None:
+                    writer.close()
+            
+            for chunk_file in parquet_chunk_paths:
+                # Remove the temporary chunk files after merging.
+                if os.path.exists(chunk_file):
+                    os.remove(chunk_file)
+
         # Reset the status conversion side information for the component status.
         HSDatalog.reset_status_conversion_side_info(comp_status, ioffset)
 
@@ -1582,14 +1624,13 @@ class HSDatalog:
         """
         comp_dict = {}
         
-        # Check if the file already exists and add an increasing number if it does
-        base_hdf_file_path = os.path.join(output_folder, "acquisition_data")
+        # Get the acquisition folder name from the HSDatalog instance.
+        # This is used to create a unique name for the HDF5 file.
+        acquisition_folder_name = os.path.basename(hsd.get_acquisition_path())
+        # Construct the base path for the HDF5 file using the output folder and acquisition folder name.
+        base_hdf_file_path = os.path.join(output_folder, acquisition_folder_name)
+        # Append the .h5 extension to the base path to create the full file path.
         hdf_file_path = base_hdf_file_path + ".h5"
-        counter = 1
-        while os.path.exists(hdf_file_path):
-            hdf_file_path = f"{base_hdf_file_path}_{counter}.h5"
-            counter += 1
-
         # Create an HDF5 file in append mode
         hdf = h5py.File(hdf_file_path, 'a')
         

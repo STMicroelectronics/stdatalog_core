@@ -21,6 +21,9 @@ import csv
 import numpy as np
 import wave
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
+import time
 
 import stdatalog_core.HSD_utils.logger as logger
 from stdatalog_core.HSD_utils.exceptions import NanoEdgeConversionError
@@ -156,24 +159,21 @@ class HSDatalogConverter:
         # Delegate the conversion to the generic 'to_xsv' method for TSV format.
         HSDatalogConverter.to_xsv(df, filename, '.tsv', '\t', mode)
     
-    def to_parquet(df:pd.DataFrame, filename, mode = 'w'):
+    @staticmethod
+    def to_parquet(df: pd.DataFrame, filename):
         """
-        Converts a DataFrame to a Parquet file.
+        Write a DataFrame to a Parquet file using pyarrow.
+        This function is only used for writing a single chunk file.
+        NOTE:-> Since the append mode is not supported for Parquet files, you must call this function
+                separately for each chunk and then merge the files later if needed.
 
         :param df: The DataFrame to convert.
         :param filename: The base name of the file to write to.
-        :param mode: The file writing mode ('w' for write, 'a' for append).
-        """        
-        parquet_file_path = filename + ".parquet"
-        if mode == 'a':
-            # Append to the existing Parquet file
-            # df.to_parquet(parquet_file_path, index=False, row_group_size=10**6)
-            df.to_parquet(parquet_file_path, index=False)
-        else:
-            # Write a new Parquet file
-            # df.to_parquet(parquet_file_path, index=False, row_group_size=10**6)
-            df.to_parquet(parquet_file_path, index=False)
-        log.debug(f"--> File: \"{parquet_file_path}\" converted chunk appended successfully")
+        """
+        parquet_file_path = filename if filename.endswith('.parquet') else filename + ".parquet"
+        table = pa.Table.from_pandas(df)
+        pq.write_table(table, parquet_file_path)
+        log.debug(f"--> File: \"{parquet_file_path}\" written successfully")
 
     @staticmethod
     def to_xsv_numpy(df, filename, extension, separator, mode = 'w'):
