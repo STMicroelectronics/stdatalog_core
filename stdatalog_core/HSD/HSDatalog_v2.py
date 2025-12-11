@@ -511,7 +511,7 @@ class HSDatalog_v2:
             if "tags" in self.acq_info_model:
                 return sorted(set(dic['l'] for dic in self.acq_info_model['tags']))
             else:
-                log.warning("No defined tag classes in Acquisition Information Component.")
+                log.warning("No defined tag classes in Acquisition Information Component status.")
                 return []
         log.warning("Empty Acquisition Info model.")
         # raise MissingAcquisitionInfoError
@@ -523,7 +523,12 @@ class HSDatalog_v2:
             acq_start_time = self.acq_info_model['start_time']
             acq_end_time = self.acq_info_model['end_time']
             self.s_t = datetime.strptime(acq_start_time, '%Y-%m-%dT%H:%M:%S.%fZ')
-            tags = self.acq_info_model['tags']
+            
+            # Extract tags from acquisition info model status
+            tags = self.acq_info_model.get("tags", [])
+            if tags == []:
+                log.warning("No defined tags in Acquisition Information Component status.")
+                return []
 
             if which_tags is not None:
                 tags = [tag for tag in tags if tag['l'] in which_tags]
@@ -699,9 +704,9 @@ class HSDatalog_v2:
             if c_type == ComponentTypeEnum.SENSOR.value:
                 s_dim = ss_stat.get('dim',1)
                 if raw_flag:
-                    s_data = np.reshape(data, (-1, 64 if "_ispu" in sensor_name else s_dim))
+                    s_data = np.reshape(data, (-1, dataframe_size if "_ispu" in sensor_name else s_dim))
                 else:
-                    s_data = np.reshape(data, (-1, 64 if "_ispu" in sensor_name else s_dim)).astype(dtype=np.byte if "_ispu" in sensor_name else np.float32)
+                    s_data = np.reshape(data, (-1, dataframe_size if "_ispu" in sensor_name else s_dim)).astype(dtype=np.byte if "_ispu" in sensor_name else np.float32)
                     sensitivity = float(ss_stat.get('sensitivity', 1))
                     np.multiply(s_data, sensitivity, out = s_data, casting='unsafe')
             elif c_type == ComponentTypeEnum.ALGORITHM.value:

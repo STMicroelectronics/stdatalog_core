@@ -44,12 +44,12 @@ NOTE: Be sure to satisfy the requirements before installing the package ([see Re
 
 On Windows:
 ```sh
-python -m pip install dist\stdatalog_core-1.2.0-py3-none-any.whl
+python -m pip install dist\stdatalog_core-1.3.0-py3-none-any.whl
 ```
 
 On Linux/macOS:
 ```sh
-python3 -m pip install dist/stdatalog_core-1.2.0-py3-none-any.whl
+python3 -m pip install dist/stdatalog_core-1.3.0-py3-none-any.whl
 ```
 
 The package could also be installed as part of the **[STDATALOG-PYSDK](https://github.com/STMicroelectronics/stdatalog-pysdk)** by launching the SDK installation script from the SDK root folder:
@@ -70,16 +70,16 @@ Source code is also available within the inner `stdatalog_core` folder.
 The package requires the following dependencies:
 
 - **[stdatalog_pnpl](https://github.com/STMicroelectronics/stdatalog_pnpl)**
-- numpy==2.2.4
+- numpy==2.3.4
 - pyserial==3.5
-- pandas==2.2.3
-- h5py==3.13.0
+- pandas==2.3.3
+- h5py==3.15.0
 - colorama==0.4.6
-- click==8.1.8
+- click==8.3.0
 - setuptools<81
-- dask==2025.5.1
-- pyarrow==20.0.0
-- plotly_resampler==0.10.0
+- dask==2025.11.0
+- pyarrow==22.0.0
+- plotly_resampler==0.11.0
 - python-statemachine==2.5.0
 
 ## Usage
@@ -110,7 +110,7 @@ device_info = hsd.get_device_info(hsd_instance)
 You can find the `HSDatalog.py` file **[here](https://github.com/STMicroelectronics/stdatalog_core/blob/main/stdatalog_core/HSD/HSDatalog.py)**. For a complete reference on how to use the `HSDatalog` class, refer to the **[stdatalog_API_examples_HSDatalog.py](https://github.com/STMicroelectronics/stdatalog_examples/blob/main/function_tests/stdatalog_API_examples_HSDatalog.py)** example or to the **[nb_stdatalog_core.ipynb](https://github.com/STMicroelectronics/stdatalog_examples/blob/main/how-to_notebooks/nb_stdatalog_core.ipynb)** Jupyter Notebook in the STDATALOG-PYSDK examples folder.
 
 ### How to use HSDLink class:
-NOTE: It is necessary to connect a compatible device (board flashed with FP-SNS-DATALOG2 or FP-IND-DATALOGMC) to the PC to run the script.
+NOTE: It is necessary to connect a compatible device (board flashed with FP-SNS-DATALOG2, FP-IND-DATALOGMC or STSW-SDATALOG) to the PC to run the script.
 ```python
 from stdatalog_core.HSD_link.HSDLink import HSDLink
 

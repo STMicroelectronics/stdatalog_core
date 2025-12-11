@@ -31,7 +31,6 @@ from stdatalog_core.HSD.utils.sensors_utils import SensorTypeConversion
 from stdatalog_core.HSD_utils.converters import NanoedgeCSVWriter, HSDatalogConverter
 from stdatalog_core.HSD_utils.exceptions import *
 import stdatalog_core.HSD_utils.logger as logger
-from stdatalog_pnpl.DTDL.device_template_manager import DeviceCatalogManager
 from stdatalog_pnpl.DTDL.dtdl_utils import AlgorithmTypeEnum, ComponentTypeEnum, SensorCategoryEnum
 
 log = logger.get_logger(__name__)
@@ -1565,15 +1564,16 @@ class HSDatalog:
                 import pyarrow.parquet as pq
                 for chunk_file in parquet_chunk_paths:
                     log.debug(f"Processing chunk file: {chunk_file}")
-                    # Read the chunk file and append it to the output Parquet file.
-                    pf = pq.ParquetFile(chunk_file)
-                    for rg in range(pf.num_row_groups):
-                        table = pf.read_row_group(rg)
-                        if first:
-                            writer = pq.ParquetWriter(output_parquet_file, table.schema)
-                            first = False
-                        writer.write_table(table)
-                    del pf  # Ensure file handle is closed
+                    with open(chunk_file, "rb") as f:
+                        # Read the chunk file and append it to the output Parquet file.
+                        pf = pq.ParquetFile(f)
+                        for rg in range(pf.num_row_groups):
+                            table = pf.read_row_group(rg)
+                            if first:
+                                writer = pq.ParquetWriter(output_parquet_file, table.schema)
+                                first = False
+                            writer.write_table(table)
+                        del pf  # Ensure file handle is closed
                 if writer is not None:
                     writer.close()
             
@@ -1606,8 +1606,20 @@ class HSDatalog:
         c_status = component[c_name]
         HSDatalog.__convert_to_xsv_batch(hsd, c_name, c_status, start_time, end_time, labeled, raw_data, output_folder, file_format, which_tags, no_timestamps, chunk_size)
     
+
     @staticmethod
-    def convert_acquisition_to_hdf5(hsd:HSDatalog_v2, components, start_time, end_time, labeled, output_folder, raw_data=False, which_tags:list = [], no_timestamps=False, chunk_size=DEFAULT_SAMPLES_CHUNK_SIZE):
+    def convert_acquisition_to_hdf5(hsd:HSDatalog_v2,
+                                        components,
+                                        start_time,
+                                        end_time,
+                                        labeled,
+                                        output_folder,
+                                        raw_data=False,
+                                        which_tags:list = [],
+                                        no_timestamps=False,
+                                        chunk_size=DEFAULT_SAMPLES_CHUNK_SIZE,
+                                        target_filename=None):
+
         """
         Converts acquisition data to HDF5 format and save it to the specified output folder.
         
@@ -1622,147 +1634,195 @@ class HSDatalog:
         :param no_timestamps: [Optional] Boolean to decide whether to exclude timestamps from the output (if true, then no Time columns in exported file).
         :param chunk_size: [Optional] The size of the data chunk (in samples) to be processed at a time. Default value = HSDatalog.DEFAULT_SAMPLES_CHUNK_SIZE = 10M Samples
         """
-        comp_dict = {}
-        
         # Get the acquisition folder name from the HSDatalog instance.
-        # This is used to create a unique name for the HDF5 file.
-        acquisition_folder_name = os.path.basename(hsd.get_acquisition_path())
-        # Construct the base path for the HDF5 file using the output folder and acquisition folder name.
-        base_hdf_file_path = os.path.join(output_folder, acquisition_folder_name)
+        
+        if target_filename is not None:
+            base_hdf_file_path = os.path.join(output_folder, target_filename)
+        else:
+            # This is used to create a unique name for the HDF5 file.
+            acquisition_folder_name = os.path.basename(hsd.get_acquisition_path())
+            # Construct the base path for the HDF5 file using the output folder and acquisition folder name.
+            base_hdf_file_path = os.path.join(output_folder, acquisition_folder_name)
+        
         # Append the .h5 extension to the base path to create the full file path.
         hdf_file_path = base_hdf_file_path + ".h5"
-        # Create an HDF5 file in append mode
-        hdf = h5py.File(hdf_file_path, 'a')
-        
-        # Ensure components is a list
+        # Create an HDF5 file in write mode
+        hdf = h5py.File(hdf_file_path, 'w')
+
         if not isinstance(components, list):
             components = [components]
-        
-        # Iterate over each component
+
+        if "sensors_data" not in hdf:
+            hdf.create_group("sensors_data")
+
         for c in components:
             c_name = list(c.keys())[0]
-            is_first_data_entry = False
-            # Get data and timestamps generator for the component
-            dat_generator = HSDatalog.get_data_and_timestamps_by_name_gen(hsd, c_name, start_time, end_time, raw_data, chunk_size)
-            if dat_generator is not None:
-                for dat in dat_generator:
-                    comp_dict[c_name] = dat
-                    data_matrix = np.transpose(comp_dict[c_name][0])
-                    time_matrix = np.array(comp_dict[c_name][1]).reshape(len(comp_dict[c_name][1]))
+            c_status = c[c_name]
+            c_type = c_status.get("c_type")
+            if c_type != ComponentTypeEnum.SENSOR.value:
+                continue
 
-                    if is_first_data_entry == False:
-                        c_type = c[c_name].get("c_type")
-                        if c_type == ComponentTypeEnum.SENSOR.value:
-                            
-                            # Create or get the sensors_data group
-                            if "sensors_data" not in hdf:
-                                hdf.create_group("sensors_data")
-                            else:
-                                hdf.get("sensors_data")
-                            
-                            # Create a group for the sensor
-                            sensor_group = hdf.create_group(f"sensors_data/{c_name}")
-                            
-                            # Get sensor axis labels
-                            axis = hsd.get_sensor_axis_label(c[c_name], c_name)
+            dat_gen = HSDatalog.get_data_and_timestamps_by_name_gen(
+                hsd, c_name, start_time, end_time, raw_data, chunk_size
+            )
+            if dat_gen is None:
+                continue
 
-                            # Create datasets for each axis
-                            for i, ax in enumerate(axis):
-                                sensor_group.create_dataset(f'{ax}', data=data_matrix[i], chunks=True, compression='gzip', maxshape=(None,) * data_matrix[i].ndim)
-                            
-                            if not no_timestamps:
-                                # Create dataset for timestamps
-                                sensor_group.create_dataset('timestamps', data=time_matrix, chunks=True, compression='gzip', maxshape=(None,) * time_matrix.ndim)
-                            
-                            # Set sensor attributes based on sensor category
-                            s_category = c[c_name].get("sensor_category")
-                            _, s_type = FileManager.decode_file_name(c_name)
+            first_chunk = True
+            axis_labels = None
+            sensor_group = None
 
-                            if s_category == SensorCategoryEnum.ISENSOR_CLASS_MEMS.value:
-                                sensor_group.attrs['ODR'] = c[c_name].get('odr', "N/A")
-                                sensor_group.attrs['FS'] = c[c_name].get('fs', "N/A")
-                                sensor_group.attrs['Sensitivity'] = c[c_name].get('sensitivity', "N/A")
-                                sensor_group.attrs['Measured ODR'] = c[c_name].get('measodr', "N/A")
-                            elif s_category == SensorCategoryEnum.ISENSOR_CLASS_AUDIO.value:
-                                sensor_group.attrs['ODR'] = c[c_name].get('odr', "N/A")
-                                sensor_group.attrs['AOP'] = c[c_name].get('aop', "N/A")
-                                sensor_group.attrs['Volume'] = c[c_name].get('sensitivity', "N/A")
-                                sensor_group.attrs['Resolution'] = c[c_name].get('resolution', "N/A")
-                            elif s_category == SensorCategoryEnum.ISENSOR_CLASS_RANGING.value:
-                                sensor_group.attrs['ODR'] = c[c_name].get('odr', "N/A")
-                                sensor_group.attrs['Resolution'] = c[c_name].get('resolution', "N/A")
-                                sensor_group.attrs['Ranging Mode'] = c[c_name].get('ranging_mode', "N/A")
-                            elif s_category == SensorCategoryEnum.ISENSOR_CLASS_LIGHT.value:
-                                sensor_group.attrs['Intermeasurement Time'] = c[c_name].get('intermeasurement_time', "N/A")
-                                sensor_group.attrs['Exposure Time'] = c[c_name].get('exposure_time', "N/A")
-                                sensor_group.attrs['Channel 1 Gain'] = c[c_name].get('channel1_gain',"N/A")
-                                sensor_group.attrs['Channel 2 Gain'] = c[c_name].get('channel2_gain',"N/A")
-                                sensor_group.attrs['Channel 3 Gain'] = c[c_name].get('channel3_gain',"N/A")
-                                sensor_group.attrs['Channel 4 Gain'] = c[c_name].get('channel4_gain',"N/A")
-                                sensor_group.attrs['Channel 5 Gain'] = c[c_name].get('channel5_gain',"N/A")
-                                sensor_group.attrs['Channel 6 Gain'] = c[c_name].get('channel6_gain',"N/A")
-                                sensor_group.attrs['Dark Mode'] = c[c_name].get('dark_mode',"N/A")
-                            elif s_category == SensorCategoryEnum.ISENSOR_CLASS_CAMERA:
-                                pass
-                            elif s_category == SensorCategoryEnum.ISENSOR_CLASS_PRESENCE.value:
-                                sensor_group.attrs['ODR'] = c[c_name].get('odr', "N/A")
-                                sensor_group.attrs['Transmittance'] = c[c_name].get('transmittance', "N/A")
-                                sensor_group.attrs['Avg Object Temperature Number'] = c[c_name].get('avg_tobject_num', "N/A")
-                                sensor_group.attrs['Avg Ambient Temperature Number'] = c[c_name].get('avg_tambient_num', "N/A")
-                                sensor_group.attrs['LPF Presence'] = c[c_name].get('lpf_p_bandwidth', "N/A")
-                                sensor_group.attrs['LPF Motion'] = c[c_name].get('lpf_m_bandwidth', "N/A")
-                                sensor_group.attrs['LPF Presence and Motion'] = c[c_name].get('lpf_p_m_bandwidth', "N/A")
-                                sensor_group.attrs['Presence Threshold'] = c[c_name].get('presence_threshold', "N/A")
-                                sensor_group.attrs['Presence Hysteresis'] = c[c_name].get('presence_hysteresis', "N/A")
-                                sensor_group.attrs['Motion Threshold'] = c[c_name].get('motion_threshold', "N/A")
-                                sensor_group.attrs['Motion Hysteresis'] = c[c_name].get('motion_hysteresis', "N/A")
-                                sensor_group.attrs['Ambient Threshold'] = c[c_name].get('tambient_shock_threshold', "N/A")
-                                sensor_group.attrs['Ambient Hysteresis'] = c[c_name].get('tambient_shock_hysteresis', "N/A")
-                                sensor_group.attrs['Embedded Compensation'] = c[c_name].get('embedded_compensation', "N/A")
-                                sensor_group.attrs['Sofware Compensation'] = c[c_name].get('software_compensation', "N/A")
-                                sensor_group.attrs['Compensation Type'] = c[c_name].get('compensation_type', "N/A")
-                                sensor_group.attrs['SW Presence Threshold'] = c[c_name].get('sw_presence_threshold', "N/A")
-                                sensor_group.attrs['SW Motion Threshold'] = c[c_name].get('sw_motion_threshold', "N/A")
-                                sensor_group.attrs['Compensation Filter Flag'] = c[c_name].get('compensation_filter_flag', "N/A")
-                                sensor_group.attrs['Absence Static Flag'] = c[c_name].get('absence_static_flag', "N/A")
-                            elif s_category == SensorCategoryEnum.ISENSOR_CLASS_POWERMETER.value:
-                                sensor_group.attrs['ADC Conversion Time'] = c[c_name].get('adc_conversion_time', "N/A")
-                                sensor_group.attrs['R Shunt'] = c[c_name].get('r_shunt', "N/A")
-                            sensor_group.attrs['Sensor Type'] = SensorTypeConversion.get_type_extended(s_type)
-                            sensor_group.attrs['Unit'] = c[c_name].get('unit', "N/A")
-                            sensor_group.attrs['Dimensions'] = c[c_name].get('dim', "N/A")
-                            sensor_group.attrs['Samples per Timestamps'] = c[c_name].get('samples_per_ts', "N/A")
-                            sensor_group.attrs['Initial Offset'] = c[c_name].get('ioffset', "N/A")
-                            sensor_group.attrs['Data Type'] = c[c_name].get('data_type', "N/A")
-                            sensor_group.attrs['USB Data Packet Size'] = c[c_name].get('usb_dps', "N/A")
-                            sensor_group.attrs['SD Data Packet Size'] = c[c_name].get('sd_dps', "N/A")
-                            sensor_group.attrs['Sensor Annotation'] = c[c_name].get('sensor_annotation', "N/A")
-                            sensor_group.attrs['Mounted'] = c[c_name].get('mounted', True)                        
-                        is_first_data_entry = True
-                        
+            for data_block, ts_block in dat_gen:
+                if data_block is None or len(data_block) == 0:
+                    continue
+                samples, n_axes = data_block.shape
+                ts_block = np.asarray(ts_block).reshape(-1)
+                if ts_block.size == 0:
+                    continue
+
+                if first_chunk:
+                    sensor_group = hdf.create_group(f"sensors_data/{c_name}")
+                    axis_labels = hsd.get_sensor_axis_label(c_status, c_name)
+
+                    is_audio = c_status.get("sensor_category") == SensorCategoryEnum.ISENSOR_CLASS_AUDIO.value
+
+                    if is_audio:
+                        # Large uncompressed chunks for maximum write throughput
+                        # Grow upper bound but keep reasonable (1M samples)
+                        chunk_len = min(max(samples, 262144), 1048576)
+                        compression = None
                     else:
-                        # Append data to existing datasets
-                        for i, ax in enumerate(axis):
-                            current_shape = sensor_group[f'{ax}'].shape
-                            new_shape = (current_shape[0] + data_matrix[i].shape[0],  )                            
-                            sensor_group[f'{ax}'].resize(new_shape)
-                            sensor_group[f'{ax}'][current_shape[0]:] = data_matrix[i]
-                        if not no_timestamps:
-                            current_shape = sensor_group['timestamps'].shape
-                            new_shape = (current_shape[0] + time_matrix.shape[0], )
-                            sensor_group['timestamps'].resize(new_shape)
-                            sensor_group['timestamps'][current_shape[0]:] = time_matrix
+                        # Moderate chunk for typical multi-axis sensors; lzf = fast
+                        chunk_len = min(max(samples, 8192), 65536)
+                        compression = "lzf"
+                        
 
-        # Retrieve acquisition, device, firmware, and tag information
+                    chunk_shape = (chunk_len,)
+
+                    for i, ax in enumerate(axis_labels):
+                        try:
+                            sensor_group.create_dataset(
+                                ax,
+                                data=data_block[:, i],
+                                maxshape=(None,),
+                                chunks=chunk_shape,
+                                compression=compression
+                            )
+                        except Exception:
+                            sensor_group.create_dataset(
+                                ax,
+                                data=data_block[:, i],
+                                maxshape=(None,),
+                                chunks=chunk_shape
+                            )
+                    if not no_timestamps:
+                        try:
+                            sensor_group.create_dataset(
+                                "timestamps",
+                                data=ts_block,
+                                maxshape=(None,),
+                                chunks=chunk_shape,
+                                compression=compression
+                            )
+                        except Exception:
+                            sensor_group.create_dataset(
+                                "timestamps",
+                                data=ts_block,
+                                maxshape=(None,),
+                                chunks=chunk_shape
+                            )
+
+                    # Attributes
+                    s_category = c_status.get("sensor_category")
+                    _, s_type = FileManager.decode_file_name(c_name)
+
+                    if s_category == SensorCategoryEnum.ISENSOR_CLASS_MEMS.value:
+                        sensor_group.attrs['ODR'] = c_status.get('odr', "N/A")
+                        sensor_group.attrs['FS'] = c_status.get('fs', "N/A")
+                        sensor_group.attrs['Sensitivity'] = c_status.get('sensitivity', "N/A")
+                        sensor_group.attrs['Measured ODR'] = c_status.get('measodr', "N/A")
+                    elif s_category == SensorCategoryEnum.ISENSOR_CLASS_AUDIO.value:
+                        sensor_group.attrs['ODR'] = c_status.get('odr', "N/A")
+                        sensor_group.attrs['AOP'] = c_status.get('aop', "N/A")
+                        sensor_group.attrs['Volume'] = c_status.get('sensitivity', "N/A")
+                        sensor_group.attrs['Resolution'] = c_status.get('resolution', "N/A")
+                    elif s_category == SensorCategoryEnum.ISENSOR_CLASS_RANGING.value:
+                        sensor_group.attrs['ODR'] = c_status.get('odr', "N/A")
+                        sensor_group.attrs['Resolution'] = c_status.get('resolution', "N/A")
+                        sensor_group.attrs['Ranging Mode'] = c_status.get('ranging_mode', "N/A")
+                    elif s_category == SensorCategoryEnum.ISENSOR_CLASS_LIGHT.value:
+                        sensor_group.attrs['Intermeasurement Time'] = c_status.get('intermeasurement_time', "N/A")
+                        sensor_group.attrs['Exposure Time'] = c_status.get('exposure_time', "N/A")
+                        for ch in range(1,7):
+                            sensor_group.attrs[f'Channel {ch} Gain'] = c_status.get(f'channel{ch}_gain', "N/A")
+                        sensor_group.attrs['Dark Mode'] = c_status.get('dark_mode', "N/A")
+                    elif s_category == SensorCategoryEnum.ISENSOR_CLASS_PRESENCE.value:
+                        sensor_group.attrs['ODR'] = c_status.get('odr', "N/A")
+                        sensor_group.attrs['Transmittance'] = c_status.get('transmittance', "N/A")
+                        sensor_group.attrs['Avg Object Temperature Number'] = c_status.get('avg_tobject_num', "N/A")
+                        sensor_group.attrs['Avg Ambient Temperature Number'] = c_status.get('avg_tambient_num', "N/A")
+                        sensor_group.attrs['LPF Presence'] = c_status.get('lpf_p_bandwidth', "N/A")
+                        sensor_group.attrs['LPF Motion'] = c_status.get('lpf_m_bandwidth', "N/A")
+                        sensor_group.attrs['LPF Presence and Motion'] = c_status.get('lpf_p_m_bandwidth', "N/A")
+                        sensor_group.attrs['Presence Threshold'] = c_status.get('presence_threshold', "N/A")
+                        sensor_group.attrs['Presence Hysteresis'] = c_status.get('presence_hysteresis', "N/A")
+                        sensor_group.attrs['Motion Threshold'] = c_status.get('motion_threshold', "N/A")
+                        sensor_group.attrs['Motion Hysteresis'] = c_status.get('motion_hysteresis', "N/A")
+                        sensor_group.attrs['Ambient Threshold'] = c_status.get('tambient_shock_threshold', "N/A")
+                        sensor_group.attrs['Ambient Hysteresis'] = c_status.get('tambient_shock_hysteresis', "N/A")
+                        sensor_group.attrs['Embedded Compensation'] = c_status.get('embedded_compensation', "N/A")
+                        sensor_group.attrs['Software Compensation'] = c_status.get('software_compensation', "N/A")
+                        sensor_group.attrs['Compensation Type'] = c_status.get('compensation_type', "N/A")
+                        sensor_group.attrs['SW Presence Threshold'] = c_status.get('sw_presence_threshold', "N/A")
+                        sensor_group.attrs['SW Motion Threshold'] = c_status.get('sw_motion_threshold', "N/A")
+                        sensor_group.attrs['Compensation Filter Flag'] = c_status.get('compensation_filter_flag', "N/A")
+                        sensor_group.attrs['Absence Static Flag'] = c_status.get('absence_static_flag', "N/A")
+                    elif s_category == SensorCategoryEnum.ISENSOR_CLASS_POWERMETER.value:
+                        sensor_group.attrs['ADC Conversion Time'] = c_status.get('adc_conversion_time', "N/A")
+
+                    sensor_group.attrs['Sensor Type'] = SensorTypeConversion.get_type_extended(s_type)
+                    sensor_group.attrs['Unit'] = c_status.get('unit', "N/A")
+                    sensor_group.attrs['Dimensions'] = c_status.get('dim', "N/A")
+                    sensor_group.attrs['Samples per Timestamps'] = c_status.get('samples_per_ts', "N/A")
+                    sensor_group.attrs['Initial Offset'] = c_status.get('ioffset', "N/A")
+                    sensor_group.attrs['Data Type'] = c_status.get('data_type', "N/A")
+                    sensor_group.attrs['USB Data Packet Size'] = c_status.get('usb_dps', "N/A")
+                    sensor_group.attrs['SD Data Packet Size'] = c_status.get('sd_dps', "N/A")
+                    sensor_group.attrs['Sensor Annotation'] = c_status.get('sensor_annotation', "N/A")
+                    sensor_group.attrs['Mounted'] = c_status.get('mounted', True)
+
+                    first_chunk = False
+                    continue
+
+                # Append
+                curr_len = sensor_group[axis_labels[0]].shape[0]
+                new_len = curr_len + samples
+                for i, ax in enumerate(axis_labels):
+                    ds = sensor_group[ax]
+                    ds.resize((new_len,))
+                    ds[curr_len:new_len] = data_block[:, i]
+                if not no_timestamps:
+                    ts_ds = sensor_group['timestamps']
+                    ts_ds.resize((new_len,))
+                    ts_ds[curr_len:new_len] = ts_block
+
+        # Metadata
         acq_info_json = HSDatalog.get_acquisition_info(hsd)
         device_info_json = HSDatalog.get_device_info(hsd)["DeviceInformation"]
         fw_info_json = HSDatalog.get_firmware_info(hsd)["firmware_info"]
-        tags_info_json = HSDatalog.get_component(hsd, "tags_info")
-        tag_labels = [value['label'] for _, value in tags_info_json["tags_info"].items() if isinstance(value, dict) and 'label' in value]
-        time_tags = HSDatalog.get_time_tags(hsd)
+        try:
+            tags_info_json = HSDatalog.get_component(hsd, "tags_info")
+            tag_labels = [v['label'] for _, v in tags_info_json["tags_info"].items()
+                          if isinstance(v, dict) and 'label' in v]
+            time_tags = HSDatalog.get_time_tags(hsd)
+        except MissingComponentModelError:
+            tag_labels = []
+            time_tags = []
+            labeled = False
 
-        # Set attributes from the acquisition info JSON
-        acq_info_attributes = {
+        acq_grp = hdf.create_group("acquisition_metadata")
+        interface_mapping = {0: "SD Card", 1: "USB", 2: "BLE", 3: "Serial"}
+        acq_grp.attrs.update({
             "Name": acq_info_json.get("name","N/A"),
             "Description": acq_info_json.get("description","N/A"),
             "Start time": acq_info_json.get("start_time","N/A"),
@@ -1770,42 +1830,28 @@ class HSDatalog:
             "Data extension": acq_info_json.get("data_ext","N/A"),
             "Data format": acq_info_json.get("data_fmt","N/A"),
             "Schema version": acq_info_json.get("schema_version","N/A"),
-            "Available Tag Labels": tag_labels if tag_labels != [] else "N/A",
-        }
-        # Set the acquisition interface attribute based on its value
-        interface_mapping = {
-            0: "SD Card",
-            1: "USB",
-            2: "BLE",
-            3: "Serial"
-        }
-        acq_info_attributes["Acquisition interface"] = interface_mapping.get(acq_info_json.get("interface"), "Unknown")
+            "Available Tag Labels": tag_labels if tag_labels else "N/A",
+            "Acquisition interface": interface_mapping.get(acq_info_json.get("interface"), "Unknown")
+        })
 
-        # Create acquisition metadata group and set attributes
-        acquisition_info_group = hdf.create_group("acquisition_metadata")
-        for key, value in acq_info_attributes.items():
-            acquisition_info_group.attrs[key] = value
-        
-        if labeled or which_tags != []:
-            # Create acquisition metadata tags group and set attributes
-            acquisition_info_tags_group = hdf.create_group("acquisition_metadata/tags")
-            tag_entries_counter = {}
+        if labeled or which_tags:
+            tag_counter = {}
             for tt in time_tags:
-                if which_tags != []:
-                    if tt['label'] not in which_tags:
-                        continue
-                if f"acquisition_metadata/tags/{tt['label']}" not in hdf:
-                    hdf.create_group(f"acquisition_metadata/tags/{tt['label']}")
-                    tag_entries_counter[tt['label']] = 0
+                if which_tags and tt['label'] not in which_tags:
+                    continue
+                lbl = tt['label']
+                path = f"acquisition_metadata/tags/{lbl}"
+                if path not in hdf:
+                    hdf.create_group(path)
+                    tag_counter[lbl] = 0
                 else:
-                    hdf.get(f"acquisition_metadata/tags/{tt['label']}")
-                    tag_entries_counter[tt['label']] += 1
-                tag_group = hdf.create_group(f"acquisition_metadata/tags/{tt['label']}/{tag_entries_counter[tt['label']]}")
-                tag_group.attrs["Start time"] = tt["time_start"]
-                tag_group.attrs["End time"] = tt["time_end"]
+                    tag_counter[lbl] += 1
+                g = hdf.create_group(f"{path}/{tag_counter[lbl]}")
+                g.attrs["Start time"] = tt["time_start"]
+                g.attrs["End time"] = tt["time_end"]
 
-        # Set attributes from the device info JSON
-        device_info_attributes = {
+        dev_grp = hdf.create_group("device_metadata")
+        dev_grp.attrs.update({
             "Manufacturer": device_info_json.get("manufacturer","N/A"),
             "Model": device_info_json.get("model","N/A"),
             "Software version": device_info_json.get("swVersion","N/A"),
@@ -1813,14 +1859,11 @@ class HSDatalog:
             "Processor architecture": device_info_json.get("processorArchitecture","N/A"),
             "Processor manufacturer": device_info_json.get("processorManufacturer","N/A"),
             "Total storage": device_info_json.get("totalStorage","N/A"),
-            "Total memory": device_info_json.get("totalMemory","N/A")
-        }
-        device_info_group = hdf.create_group("device_metadata")
-        for key, value in device_info_attributes.items():
-            device_info_group.attrs[key] = value
+            "Total memory": device_info_json.get("totalMemory","N/A"),
+        })
 
-        # Set attributes from the firmware info JSON
-        firmware_info_attributes = {
+        fw_grp = hdf.create_group("firmware_metadata")
+        fw_grp.attrs.update({
             "Alias": fw_info_json.get("alias","N/A"),
             "Firmware name": fw_info_json.get("fw_name","N/A"),
             "Firmware version": fw_info_json.get("fw_version","N/A"),
@@ -1828,13 +1871,11 @@ class HSDatalog:
             "Device URL": fw_info_json.get("device_url","N/A"),
             "Firmware URL": fw_info_json.get("fw_url","N/A"),
             "MAC address": fw_info_json.get("mac_address","N/A"),
-        }
-        firmware_info_group = hdf.create_group("firmware_metadata")
-        for key, value in firmware_info_attributes.items():
-            firmware_info_group.attrs[key] = value
+        })
 
-        # Close the HDF5 file
         hdf.close()
+        return hdf_file_path
+  
 
     @staticmethod
     def __convert_to_txt_by_tags_batch(hsd, comp_name, comp_status, start_time, end_time, output_folder, out_format, which_tags:list = [], with_untagged = False, no_timestamps = False, raw_data = False, chunk_size = DEFAULT_SAMPLES_CHUNK_SIZE):

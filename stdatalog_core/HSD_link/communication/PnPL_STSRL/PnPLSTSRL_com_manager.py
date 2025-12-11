@@ -17,7 +17,7 @@ import json
 import serial
 import serial.tools.list_ports as list_ports
 from threading import Semaphore
-from stdatalog_core.HSD_link.communication.PnPL_STSRL.SSTL import SSTL
+from stdatalog_core.HSD_link.communication.PnPL_STSRL.SSTL import SSTL, SSTLPacket
 
 from stdatalog_pnpl.DTDL import device_template_model as DTM
 
@@ -47,12 +47,15 @@ class PnPLSTSRL_CommandManager:
         if self.sstl_manager is None:
             log.error("SSTL Manager is not initialized.")
             return None
-        self.sstl_manager.send_command(self.serial_port, PnPL_msg)
+        self.sstl_manager.send_command(self.serial_port, PnPL_msg, self.serial_semaphore)
         self.serial_semaphore.acquire(timeout=2)
         print("SEND PnPL Msg UNLOCKED, Response:", self.sstl_packet_copy.data)
         if self.sstl_packet_copy.data != b'':
-            return json.loads(self.sstl_packet.data.decode())
+            res = json.loads(self.sstl_packet_copy.data.decode())
+            self.sstl_packet_copy.data = b''
+            return res
         else:
+            log.error("No response received for the command: {}".format(PnPL_msg))
             return None
 
     def receive_bytes(self):
@@ -67,12 +70,17 @@ class PnPLSTSRL_CommandManager:
                     return "ERROR"
                 elif cr == 2:
                     # response
-                    self.serial_semaphore.release()
-                    # in case of sync packets, we need to make a copy of the received packet to avoid that the next "receive_bytes" call overwrites it
-                    # NOTE: this mechanism works only if the payload is fully contained in a single packet. Problem: If the payload is split in multiple packets, the copy will contain only the last packet
-                    # TODO: implement a mechanism to handle multi-packet payloads
-                    self.sstl_packet_copy = self.sstl_packet
-                    return self.sstl_packet
+                    # Append the new data to the existing data
+                    if self.sstl_packet_copy is None:
+                        self.sstl_packet_copy = self.sstl_packet
+                    else:
+                        self.sstl_packet_copy.data += self.sstl_packet.data
+                    if self.sstl_manager.tx_segmentation == False:
+                        self.serial_semaphore.release()
+                        return self.sstl_packet
+                    else:
+                        self.sstl_manager.send_ack(self.serial_port, self.sstl_packet_copy.header.sequence_num)
+                        return self.sstl_packet_copy
                 elif cr == 3:
                     # async property change
                     return self.sstl_packet
@@ -86,11 +94,16 @@ class PnPLSTSRL_CommandManager:
         return self.receive_bytes()
     
     def flush(self):
-        self.serial_port.flush()
-        self.serial_port.read_all()
-
-    def open(self, com_id, speed=1843200):
-        self.serial_port = serial.Serial(com_id, speed)
+        if self.serial_port and self.serial_port.is_open:
+            try:
+                # self.serial_port.flush()
+                self.serial_port.read_all()
+            except Exception as e:
+                log.error("Error flushing serial port: {}".format(e))
+        else:
+            log.warning("Attempted to flush a closed or invalid serial port.")
+    def open(self, com_id, speed=1843200, timeout=None):
+        self.serial_port = serial.Serial(com_id, speed, timeout=timeout)
         self.sstl_manager = SSTL(self.serial_port)
         return self.serial_port.is_open
 
@@ -98,6 +111,12 @@ class PnPLSTSRL_CommandManager:
         if self.serial_port:
             # Close the serial connection
             self.serial_port.close()
+            # Reset all serial connection attributes
+            self.serial_port = None
+            self.sstl_packet = None
+            self.sstl_packet_copy = None
+            self.serial_semaphore = Semaphore(0)
+            self.sstl_manager = None
         else:
             log.error("Serial port not opened. Cannot close it.")
 

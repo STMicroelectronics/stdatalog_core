@@ -467,37 +467,58 @@ class HSD_Dll:
         cmd_response = ctypes.c_char_p()
         dIdC = ctypes.c_int(dId)
         interfaceC = ctypes.c_int(interface)
+        cmd_res = ""
         res = self.hsd_wrapper.hs_datalog_start_log(dIdC, interfaceC, ctypes.byref(cmd_response))
-        if res != ST_HS_DATALOG_ERROR:
-            if cmd_response.value is not None:
-                cmd_res = cmd_response.value.decode('UTF-8')
-                print("{} - HSDatalogApp.{} - INFO - PnPL Response: {}".format(logger.get_datetime(), __name__, cmd_res))
+        try:
+            if res != ST_HS_DATALOG_ERROR:
+                if cmd_response.value is not None:
+                    cmd_res = cmd_response.value.decode('UTF-8')
+                    print("{} - HSDatalogApp.{} - INFO - PnPL Response: {}".format(logger.get_datetime(), __name__, cmd_res))
+                else:
+                    cmd_res = "Command sent successfully!"
             else:
-                cmd_res = "Command sent successfully!"
+                    cmd_res = "Command failed"
+        finally:
+            if cmd_response and cmd_response.value:
+                self.__hs_datalog_free(cmd_response)
         return (res == ST_HS_DATALOG_OK, cmd_res)
 
     def hs_datalog_stop_log(self, dId : int) -> bool:
         cmd_response = ctypes.c_char_p()
         dIdC = ctypes.c_int(dId)
+        cmd_res = ""
         res = self.hsd_wrapper.hs_datalog_stop_log(dIdC, ctypes.byref(cmd_response))
-        if res != ST_HS_DATALOG_ERROR:
-            if cmd_response.value is not None:
-                cmd_res = cmd_response.value.decode('UTF-8')
-                print("{} - HSDatalogApp.{} - INFO - PnPL Response: {}".format(logger.get_datetime(), __name__, cmd_res))
+        try:
+            if res != ST_HS_DATALOG_ERROR:
+                if cmd_response.value is not None:
+                    cmd_res = cmd_response.value.decode('UTF-8')
+                    print("{} - HSDatalogApp.{} - INFO - PnPL Response: {}".format(logger.get_datetime(), __name__, cmd_res))
+                else:
+                    cmd_res = "Command sent successfully!"
             else:
-                cmd_res = "Command sent successfully!"
+                cmd_res = "Command failed"
+        finally:
+            if cmd_response and cmd_response.value:
+                self.__hs_datalog_free(cmd_response)
         return (res == ST_HS_DATALOG_OK, cmd_res)
     
     def hs_datalog_set_rtc_time(self, dId : int) -> bool:
         cmd_response = ctypes.c_char_p()
         dIdC = ctypes.c_int(dId)
+        cmd_res = ""
         res = self.hsd_wrapper.hs_datalog_set_rtc_time(dIdC, ctypes.byref(cmd_response))
-        if res != ST_HS_DATALOG_ERROR:
-            if cmd_response.value is not None:
-                cmd_res = cmd_response.value.decode('UTF-8')
-                print("{} - HSDatalogApp.{} - INFO - PnPL Response: {}".format(logger.get_datetime(), __name__, cmd_res))
+        try:            
+            if res != ST_HS_DATALOG_ERROR:
+                if cmd_response.value is not None:
+                    cmd_res = cmd_response.value.decode('UTF-8')
+                    print("{} - HSDatalogApp.{} - INFO - PnPL Response: {}".format(logger.get_datetime(), __name__, cmd_res))
+                else:
+                    cmd_res = "Command sent successfully!"
             else:
-                cmd_res = "Command sent successfully!"
+                cmd_res = "Command failed"
+        finally:
+            if cmd_response and cmd_response.value:
+                self.__hs_datalog_free(cmd_response)
         return (res == ST_HS_DATALOG_OK, cmd_res)
 
     def hs_datalog_get_device_status(self, dId : int) -> [bool, str]:

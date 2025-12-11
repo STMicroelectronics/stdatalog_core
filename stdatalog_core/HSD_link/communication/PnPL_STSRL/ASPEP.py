@@ -182,6 +182,9 @@ class ASPEP:
         
     def receive_bytes(self, ser):
         header = ser.read(4)
+        if len(header) < 4:
+            print("ERROR: ASPEP packet header not received correctly")
+            return None
         p_type = ASPEPType(header[0] & 0b111)
         parity = (header[0] >> 3) & 0b1
         inner_header = None
@@ -195,12 +198,12 @@ class ASPEP:
                 print(f"ASPEP RXS_MAX updated {self.RXS_SLAVE_MAX},{rxs_max}")
                 self.RXS_SLAVE_MAX = ((rxs_max+1)*32)
                 updated_params = True
-            txs_max = (((header[1] >> 6) & 0b11) << 5) + (header[2] & 0b11111)
+            txs_max = ((header[1] >> 6) & 0b11) + ((header[2] & 0b11111) << 2)
             if ((txs_max+1)*32) != self.TXS_SLAVE_MAX:
                 print(f"ASPEP TXS_MAX updated {self.TXS_SLAVE_MAX},{txs_max}")
                 self.TXS_SLAVE_MAX = ((txs_max+1)*32)
                 updated_params = True
-            txa_max = (((header[2] >> 5) & 0b111) << 4) + (header[3] & 0b1111)
+            txa_max = ((header[2] >> 5) & 0b111) + ((header[3] & 0b1111) << 3)
             if (txa_max*64) != self.TXA_SLAVE_MAX:
                 print(f"ASPEP TXA_MAX updated {self.TXA_SLAVE_MAX},{txa_max}")
                 self.TXA_SLAVE_MAX = (txa_max*64)
@@ -220,9 +223,9 @@ class ASPEP:
                 print("ERROR: ASPEP Ping - different N values in packet")
                 return
             liid = header[1] & 0b1111
-            packet_number = (((header[1] >> 4) & 0b1111) << 8) + \
+            packet_number = ((header[1] >> 4) & 0b1111) + \
                             ((header[2] & 0b11111111) << 4) + \
-                            (header[3] & 0b1111)
+                            ((header[3] & 0b1111) << 12)
             inner_header = ASPEPPingHeader(c, n, liid, packet_number)
         elif p_type == ASPEPType.Error:
             error_code = header[1]

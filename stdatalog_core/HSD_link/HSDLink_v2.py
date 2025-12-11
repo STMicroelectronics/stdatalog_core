@@ -73,11 +73,11 @@ class HSDLink_v2:
     # def open(self):
     #     return self.__com_manager.open()
     
-    def open(self, com_id=None, com_speed=None):
+    def open(self, com_id=None, com_speed=None, timeout=None):
         if com_id is None or com_speed is None:
             return self.__com_manager.open()
-        return self.__com_manager.open(com_id, com_speed)
-    
+        return self.__com_manager.open(com_id, com_speed, timeout=timeout)
+
     def close(self):
         return self.__com_manager.close()
 
@@ -110,6 +110,9 @@ class HSDLink_v2:
         if self.acquisition_folder is None:
             return self.__base_acquisition_folder
         return self.acquisition_folder
+
+    def get_base_acquisition_folder(self):
+        return self.__base_acquisition_folder
 
     def get_nof_devices(self):
         return self.__com_manager.get_nof_devices()
