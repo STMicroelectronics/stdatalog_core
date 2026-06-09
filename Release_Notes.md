@@ -28,7 +28,55 @@ The package is part of the **[STDATALOG-PYSDK](https://github.com/STMicroelectro
 # Update History
 
 ::: {.collapse}
-<input type="checkbox" id="collapse-section5" checked aria-hidden="true">
+<input type="checkbox" id="collapse-section6" checked aria-hidden="true">
+<label for="collapse-section6" aria-hidden="true">v1.4.0 / 15-May-26</label>
+<div>
+
+
+## Main Changes
+
+### Maintenance Release
+
+- Added support for uploading JSON configuration files for MLC and ISPU sensors
+  - Renamed attributes
+  - Updated methods to use MLC/ISPU formats with JSON and maintained retrocompatibility with UCF format
+  - Fixed plot function + dataframe conversion for ISPU 
+- Refactored utility modules for improved documentation and code clarity
+  - Enhanced docstrings across `file_manager.py`, `plot_utils.py`, `sensors_utils.py`, and `type_conversion.py` to provide clearer descriptions of module purposes, function parameters, return types, and usage examples.
+  - Improved code readability by standardizing formatting, including consistent use of whitespace and line breaks.
+  - Updated `FileManager` methods to clarify file naming conventions and error handling.
+  - Refined `PlotUtils` methods for drawing regions and tags on Plotly figures, including better parameter descriptions and behavior notes.
+  - Streamlined `SensorUtils` and `TypeConversion` classes for sensor type management and type conversion, respectively, with clearer logic and reduced branching.
+  - Added error handling and edge case considerations in type conversion functions, ensuring robustness against unexpected inputs.
+- Refactored HSDatalog_v2 
+  - Added support streaming Parquet row-groups with fastparquet and fallback to (lazy) Dask DataFrame if available
+  - Improved type casting and rounding for data columns: solved "ispu" casting
+- Added get_type_short function in sensors_utils.py
+- Added missing nullity check for dataframe variable in __get_dataframe_batch and __get_dataframe_batch_gen methods
+- Refactored HSDatalog to streamline sensor and actuator data handling in HDF5 format
+- Improve command response handling in PnPLSTSRL_CommandManager
+- Refactored SSTL implementation and enhance documentation
+  - Updated SSTL.py to improve code structure and readability.
+  - Added comprehensive docstrings for classes and methods in SSTL.
+  - Implemented detailed comments explaining packet header construction and segmentation logic.
+  - Modified STWIN_HSD communication files to skip pylint checks for better compatibility.
+  - Enhanced STWINHSDSetMLCSensorCmd class with additional documentation for clarity.
+  - Ensured consistent formatting and style across communication modules.
+- Improved data loss detection over ASPEP serial via CRC
+- Added dedicated exceptions for SSTL and PnPLSTSRL_com_manager
+- Fixed exception_error, when closing main window
+- Enhanced documentation and error handling across modules
+  - Updated docstrings in converters.py to provide detailed descriptions of classes and methods, including usage examples and parameter explanations.
+  - Improved error handling in dtm.py for loading Device Template Models, ensuring better validation and logging of issues.
+  - Expanded exception classes in exceptions.py with detailed docstrings, providing context for each error type and improving clarity for users.
+  - Enhanced logging functionality in logger.py with improved formatting and documentation for better usability and understanding of logging behavior.
+- Replaced pyarrow with fastparquet for DataFrame to Parquet conversion
+
+</div>
+:::
+
+::: {.collapse}
+<input type="checkbox" id="collapse-section5" aria-hidden="true">
 <label for="collapse-section5" aria-hidden="true">v1.3.0 / 15-Nov-25</label>
 <div>
 

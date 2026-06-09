@@ -24,6 +24,7 @@ stdatalog_core/HSD/utils/plot_utils.py
 stdatalog_core/HSD/utils/sensors_utils.py
 stdatalog_core/HSD/utils/type_conversion.py
 stdatalog_core/HSD_link/HSDLink.py
+stdatalog_core/HSD_link/HSDLink_utils.py
 stdatalog_core/HSD_link/HSDLink_v1.py
 stdatalog_core/HSD_link/HSDLink_v2.py
 stdatalog_core/HSD_link/__init__.py

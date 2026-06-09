@@ -11,7 +11,29 @@
 # *
 # *
 # ******************************************************************************
-#
+"""
+Utilities for handling Device Template Models (DTMs) in the HSDatalog SDK.
+This module exposes HSDatalogDTM, a helper to load a DTM (in DTDL JSON format)
+from disk and register it into the device catalog via DeviceCatalogManager.
+Key functionality:
+- upload_custom_dtm(custom_dtm): Given a tuple (board_id, fw_id, dtm_path),
+    reads the JSON file, serializes it, and calls
+    DeviceCatalogManager.add_dtdl_model(board_id, fw_id, dtm_filename, dtm_json).
+Parameters:
+- custom_dtm:
+    - board_id: Identifier of the target board in the catalog (int or str).
+    - fw_id: Firmware identifier for the board (int or str).
+    - dtm_path: Filesystem path to the DTM JSON file.
+Behavior and error handling:
+- Validates the file path and attempts to load/serialize JSON content.
+- On invalid path or read/parse errors, logs an error and returns without raising.
+- No action is performed if custom_dtm is None.
+Dependencies:
+- stdatalog_core.HSD_utils.logger for error logging.
+- stdatalog_pnpl.DTDL.device_template_manager.DeviceCatalogManager for catalog updates.
+Example:
+        >>> HSDatalogDTM.upload_custom_dtm((123, 1, "/path/to/device_dtm.json"))
+"""
 
 import os
 import json
@@ -20,25 +42,42 @@ from stdatalog_pnpl.DTDL.device_template_manager import DeviceCatalogManager
 log = logger.setup_applevel_logger(is_debug = False, file_name= "app_debug.log")
 
 class HSDatalogDTM:
+    """
+    Utility class for handling Device Template Models (DTMs).
     
+    Methods:
+        - upload_custom_dtm(custom_dtm): Uploads a custom DTM to the DeviceCatalogManager.
+    """
     @staticmethod
     def upload_custom_dtm(custom_dtm):
-        if custom_dtm is not None:
-            n_board_id = custom_dtm[0]
-            n_fw_id = custom_dtm[1]
-            n_dtm_path = custom_dtm[2]
-            n_dtm_filename = os.path.basename(n_dtm_path).split('.')[0]
-            n_dtm_json_str = None
-            try:
-                if os.path.isfile(n_dtm_path) and os.path.exists(n_dtm_path):
-                    with open(n_dtm_path) as f:
-                        device_json_dict = json.load(f)
-                    n_dtm_json_str = json.dumps(device_json_dict)
-                    f.close()
-                else:
-                    raise
-            except:
-                log.error("Wrong nput custom Device Template Model path")
-                return
-            if n_dtm_json_str is not None:
-                DeviceCatalogManager.add_dtdl_model(n_board_id, n_fw_id, n_dtm_filename, n_dtm_json_str)
+        """
+        Upload a custom Device Template Model (DTM) to the DeviceCatalogManager.
+
+        :param custom_dtm: A tuple containing (board_id, fw_id, dtm_path).
+        """
+        if custom_dtm is None:
+            return
+
+        board_id, fw_id, dtm_path = custom_dtm
+
+        # Validate path before attempting to read
+        if not (os.path.isfile(dtm_path) and os.path.exists(dtm_path)):
+            log.error("Invalid input custom Device Template Model path: %s", dtm_path)
+            return
+
+        try:
+            with open(dtm_path, encoding="utf-8") as f:
+                device_json_dict = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            log.error("Failed to read/parse custom DTM at %s: %s", dtm_path, exc)
+            return
+
+        dtm_filename = os.path.basename(dtm_path).split(".")[0]
+        dtm_json_str = json.dumps(device_json_dict)
+
+        DeviceCatalogManager.add_dtdl_model(
+            board_id,
+            fw_id,
+            dtm_filename,
+            dtm_json_str,
+        )

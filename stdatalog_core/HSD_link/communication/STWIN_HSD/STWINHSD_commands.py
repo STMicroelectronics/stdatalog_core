@@ -11,9 +11,8 @@
 # *
 # *
 # ******************************************************************************
-#
+# pylint: skip-file
 
-import abc
 from dataclasses import dataclass
 from typing import Any, List, TypeVar, Type, Callable, cast
 
@@ -521,10 +520,23 @@ class STWINHSDSetSensorCmd(STWINHSDSetCmd):
 
 @dataclass
 class STWINHSDSetMLCSensorCmd(STWINHSDSetCmd):
+    """
+    Command to set the MLC configuration for a specific sensor.
+    Attributes:
+        sensor_id (int): The ID of the sensor to configure.
+        subSensorStatus (List[MLCParam]): A list of MLCParam objects representing the MLC configuration.
+    """
     sensor_id: int
     subSensorStatus: List[MLCParam]
 
     def __init__(self, sensor_id: int, subSensorStatus: List[MLCParam]):
+        """
+        Initialize the STWINHSDSetMLCSensorCmd with sensor ID and MLC parameters.
+
+        Parameters:
+            sensor_id (int): The ID of the sensor to configure.
+            subSensorStatus (List[MLCParam]): A list of MLCParam objects representing the MLC configuration.
+        """
         self.command = "SET"
         self.request = "mlc_config"
         self.sensor_id = sensor_id
@@ -532,12 +544,24 @@ class STWINHSDSetMLCSensorCmd(STWINHSDSetCmd):
 
     @staticmethod
     def from_dict(self, obj: Any) -> 'STWINHSDSetMLCSensorCmd':
+        """
+        Create an STWINHSDSetMLCSensorCmd instance from a dictionary.
+        Parameters:
+            obj (Any): The dictionary containing the command data.
+        Returns:
+            STWINHSDSetMLCSensorCmd: The created command instance.
+        """
         assert isinstance(obj, dict)
         sensor_id = from_int(obj.get("sensorId"))
         subSensorStatus = from_list(MLCParam.from_dict, obj.get("subSensorStatus"))
         return STWINHSDSetMLCSensorCmd(sensor_id, subSensorStatus)
 
     def to_dict(self) -> dict:
+        """
+        Convert the STWINHSDSetMLCSensorCmd instance to a dictionary.
+        Returns:
+            dict: The dictionary representation of the command.
+        """
         result: dict = {}
         result.update(super(STWINHSDSetMLCSensorCmd, self).to_dict())
         result["sensorId"] = from_int(self.sensor_id)

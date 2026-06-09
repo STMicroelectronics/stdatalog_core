@@ -11,7 +11,7 @@
 # *
 # *
 # ******************************************************************************
-#
+# pylint: skip-file
 
 import json
 import stdatalog_core.HSD_utils.logger as logger

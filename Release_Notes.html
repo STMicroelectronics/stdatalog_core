@@ -32,9 +32,62 @@
 <div class="col-sm-12 col-lg-8">
 <h1 id="update-history">Update History</h1>
 <div class="collapse">
-<input type="checkbox" id="collapse-section5" checked aria-hidden="true"> <label for="collapse-section5" aria-hidden="true">v1.3.0 / 15-Nov-25</label>
+<input type="checkbox" id="collapse-section6" checked aria-hidden="true"> <label for="collapse-section6" aria-hidden="true">v1.4.0 / 15-May-26</label>
 <div>
 <h2 id="main-changes">Main Changes</h2>
+<h3 id="maintenance-release">Maintenance Release</h3>
+<ul>
+<li>Added support for uploading JSON configuration files for MLC and ISPU sensors
+<ul>
+<li>Renamed attributes</li>
+<li>Updated methods to use MLC/ISPU formats with JSON and maintained retrocompatibility with UCF format</li>
+<li>Fixed plot function + dataframe conversion for ISPU</li>
+</ul></li>
+<li>Refactored utility modules for improved documentation and code clarity
+<ul>
+<li>Enhanced docstrings across <code>file_manager.py</code>, <code>plot_utils.py</code>, <code>sensors_utils.py</code>, and <code>type_conversion.py</code> to provide clearer descriptions of module purposes, function parameters, return types, and usage examples.</li>
+<li>Improved code readability by standardizing formatting, including consistent use of whitespace and line breaks.</li>
+<li>Updated <code>FileManager</code> methods to clarify file naming conventions and error handling.</li>
+<li>Refined <code>PlotUtils</code> methods for drawing regions and tags on Plotly figures, including better parameter descriptions and behavior notes.</li>
+<li>Streamlined <code>SensorUtils</code> and <code>TypeConversion</code> classes for sensor type management and type conversion, respectively, with clearer logic and reduced branching.</li>
+<li>Added error handling and edge case considerations in type conversion functions, ensuring robustness against unexpected inputs.</li>
+</ul></li>
+<li>Refactored HSDatalog_v2
+<ul>
+<li>Added support streaming Parquet row-groups with fastparquet and fallback to (lazy) Dask DataFrame if available</li>
+<li>Improved type casting and rounding for data columns: solved “ispu” casting</li>
+</ul></li>
+<li>Added get_type_short function in sensors_utils.py</li>
+<li>Added missing nullity check for dataframe variable in __get_dataframe_batch and __get_dataframe_batch_gen methods</li>
+<li>Refactored HSDatalog to streamline sensor and actuator data handling in HDF5 format</li>
+<li>Improve command response handling in PnPLSTSRL_CommandManager</li>
+<li>Refactored SSTL implementation and enhance documentation
+<ul>
+<li>Updated SSTL.py to improve code structure and readability.</li>
+<li>Added comprehensive docstrings for classes and methods in SSTL.</li>
+<li>Implemented detailed comments explaining packet header construction and segmentation logic.</li>
+<li>Modified STWIN_HSD communication files to skip pylint checks for better compatibility.</li>
+<li>Enhanced STWINHSDSetMLCSensorCmd class with additional documentation for clarity.</li>
+<li>Ensured consistent formatting and style across communication modules.</li>
+</ul></li>
+<li>Improved data loss detection over ASPEP serial via CRC</li>
+<li>Added dedicated exceptions for SSTL and PnPLSTSRL_com_manager</li>
+<li>Fixed exception_error, when closing main window</li>
+<li>Enhanced documentation and error handling across modules
+<ul>
+<li>Updated docstrings in converters.py to provide detailed descriptions of classes and methods, including usage examples and parameter explanations.</li>
+<li>Improved error handling in dtm.py for loading Device Template Models, ensuring better validation and logging of issues.</li>
+<li>Expanded exception classes in exceptions.py with detailed docstrings, providing context for each error type and improving clarity for users.</li>
+<li>Enhanced logging functionality in logger.py with improved formatting and documentation for better usability and understanding of logging behavior.</li>
+</ul></li>
+<li>Replaced pyarrow with fastparquet for DataFrame to Parquet conversion</li>
+</ul>
+</div>
+</div>
+<div class="collapse">
+<input type="checkbox" id="collapse-section5" aria-hidden="true"> <label for="collapse-section5" aria-hidden="true">v1.3.0 / 15-Nov-25</label>
+<div>
+<h2 id="main-changes-1">Main Changes</h2>
 <h3 id="maintenance-release-and-product-update">Maintenance Release and Product Update</h3>
 <ul>
 <li><strong>Full support to Serial Datalog adding compatibility with STSW-SDATALOG firmware examples:</strong>
@@ -61,7 +114,7 @@
 <div class="collapse">
 <input type="checkbox" id="collapse-section4" aria-hidden="true"> <label for="collapse-section4" aria-hidden="true">v1.2.1 / 29-Aug-25</label>
 <div>
-<h2 id="main-changes-1">Main Changes</h2>
+<h2 id="main-changes-2">Main Changes</h2>
 <h3 id="patch-release">Patch Release</h3>
 <ul>
 <li>Fixed to_parquet and h5 converter and plot functions</li>
@@ -72,8 +125,8 @@
 <div class="collapse">
 <input type="checkbox" id="collapse-section3" aria-hidden="true"> <label for="collapse-section3" aria-hidden="true">v1.2.0 / 20-Jun-25</label>
 <div>
-<h2 id="main-changes-2">Main Changes</h2>
-<h3 id="maintenance-release">Maintenance Release</h3>
+<h2 id="main-changes-3">Main Changes</h2>
+<h3 id="maintenance-release-1">Maintenance Release</h3>
 <ul>
 <li>Added support to Python 3.13</li>
 <li>Removed dependency from matplotlib: use Parquet + Plotly (wResampler) + Dash as default for HSDatalog_v2 plots</li>
@@ -91,8 +144,8 @@
 <div class="collapse">
 <input type="checkbox" id="collapse-section2" aria-hidden="true"> <label for="collapse-section2" aria-hidden="true">v1.1.0 / 9-Apr-25</label>
 <div>
-<h2 id="main-changes-3">Main Changes</h2>
-<h3 id="maintenance-release-1">Maintenance Release</h3>
+<h2 id="main-changes-4">Main Changes</h2>
+<h3 id="maintenance-release-2">Maintenance Release</h3>
 <ul>
 <li><strong>Added macos support.</strong></li>
 <li><strong>Updated libhs_datalog_v2 libraries for all the supported OS.</strong>
@@ -111,7 +164,7 @@
 <div class="collapse">
 <input type="checkbox" id="collapse-section1" aria-hidden="true"> <label for="collapse-section1" aria-hidden="true">v1.0.0 / 17-Jan-25</label>
 <div>
-<h2 id="main-changes-4">Main Changes</h2>
+<h2 id="main-changes-5">Main Changes</h2>
 <h3 id="first-official-release">First official release</h3>
 </div>
 </div>
