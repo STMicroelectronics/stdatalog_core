@@ -44,12 +44,12 @@ NOTE: Be sure to satisfy the requirements before installing the package ([see Re
 
 On Windows:
 ```sh
-python -m pip install dist\stdatalog_core-1.3.0-py3-none-any.whl
+python -m pip install dist\stdatalog_core-1.4.0-py3-none-any.whl
 ```
 
 On Linux/macOS:
 ```sh
-python3 -m pip install dist/stdatalog_core-1.3.0-py3-none-any.whl
+python3 -m pip install dist/stdatalog_core-1.4.0-py3-none-any.whl
 ```
 
 The package could also be installed as part of the **[STDATALOG-PYSDK](https://github.com/STMicroelectronics/stdatalog-pysdk)** by launching the SDK installation script from the SDK root folder:
@@ -78,7 +78,7 @@ The package requires the following dependencies:
 - click==8.3.0
 - setuptools<81
 - dask==2025.11.0
-- pyarrow==22.0.0
+- fastparquet==2026.3.0
 - plotly_resampler==0.11.0
 - python-statemachine==2.5.0
 
