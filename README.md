@@ -27,13 +27,13 @@ This package is composed of three sub-packages (The acronym HSD stands for High-
     - Extract data from raw interleaved data+timestamp buffers
     - Helper functions for common tasks such as string formatting, date handling, and list management.
 
-The package is compatible with Windows, Linux and macOS, and supports Python 3.10 to 3.13.
+The package is compatible with Windows, Linux and macOS, and supports Python 3.11 to 3.13.
 
 ## Features
 
 - High-speed data logging
 - Support for multiple platforms (Windows, Linux, macOS)
-- Compatible with Python 3.10 to 3.13
+- Compatible with Python 3.11 to 3.13
 - Communication with various hardware devices
 - Data processing, conversion and visualization utilities
 
