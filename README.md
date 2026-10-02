@@ -27,13 +27,13 @@ This package is composed of three sub-packages (The acronym HSD stands for High-
     - Extract data from raw interleaved data+timestamp buffers
     - Helper functions for common tasks such as string formatting, date handling, and list management.
 
-The package is compatible with Windows, Linux and macOS, and supports Python 3.11 to 3.13.
+The package is compatible with Windows, Linux and macOS, and supports Python 3.10 to 3.13.
 
 ## Features
 
 - High-speed data logging
 - Support for multiple platforms (Windows, Linux, macOS)
-- Compatible with Python 3.11 to 3.13
+- Compatible with Python 3.10 to 3.13
 - Communication with various hardware devices
 - Data processing, conversion and visualization utilities
 
@@ -44,12 +44,12 @@ NOTE: Be sure to satisfy the requirements before installing the package ([see Re
 
 On Windows:
 ```sh
-python -m pip install dist\stdatalog_core-1.4.0-py3-none-any.whl
+python -m pip install dist\stdatalog_core-1.5.0-py3-none-any.whl
 ```
 
 On Linux/macOS:
 ```sh
-python3 -m pip install dist/stdatalog_core-1.4.0-py3-none-any.whl
+python3 -m pip install dist/stdatalog_core-1.5.0-py3-none-any.whl
 ```
 
 The package could also be installed as part of the **[STDATALOG-PYSDK](https://github.com/STMicroelectronics/stdatalog-pysdk)** by launching the SDK installation script from the SDK root folder:
@@ -70,17 +70,17 @@ Source code is also available within the inner `stdatalog_core` folder.
 The package requires the following dependencies:
 
 - **[stdatalog_pnpl](https://github.com/STMicroelectronics/stdatalog_pnpl)**
-- numpy==2.3.4
+- numpy==2.5.2
 - pyserial==3.5
-- pandas==2.3.3
-- h5py==3.15.0
+- pandas==3.0.5
+- h5py==3.16.0
 - colorama==0.4.6
-- click==8.3.0
-- setuptools<81
-- dask==2025.11.0
-- fastparquet==2026.3.0
+- click==8.4.2
+- setuptools==84.0.0
+- dask==2026.7.1
+- fastparquet==2026.5.0
 - plotly_resampler==0.11.0
-- python-statemachine==2.5.0
+- python-statemachine==3.2.1
 
 ## Usage
 Here is a basic example of how to use the stdatalog_core package:

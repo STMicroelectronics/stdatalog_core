@@ -29,6 +29,25 @@ The package is part of the **[STDATALOG-PYSDK](https://github.com/STMicroelectro
 
 ::: {.collapse}
 <input type="checkbox" id="collapse-section6" checked aria-hidden="true">
+<label for="collapse-section6" aria-hidden="true">v1.5.0 / 18-Sep-26</label>
+<div>
+
+
+## Main Changes
+
+### Maintenance Release
+
+- Optimized data streaming: precompute constants for the zero-copy multi-packet parsing (zero-copy DataReader)
+- Fixed offline converters and plot for ToF (generic output_format)
+- Added support to Python 3.14
+- Updated requirements with more recent versions of packages dependencies
+
+
+</div>
+:::
+
+::: {.collapse}
+<input type="checkbox" id="collapse-section6" aria-hidden="true">
 <label for="collapse-section6" aria-hidden="true">v1.4.0 / 15-May-26</label>
 <div>
 

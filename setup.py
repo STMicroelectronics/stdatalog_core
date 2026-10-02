@@ -20,7 +20,7 @@ with open("LICENSE.md", "r") as fh:
 
 setuptools.setup(
     name="stdatalog_core",
-    version="1.4.0",
+    version="1.5.0",
     author="SRA-ASP",
     author_email="matteo.ronchi@st.com",
     description="STMicroelectronics High Speed Datalog python package",
@@ -41,20 +41,21 @@ setuptools.setup(
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
         "Programming Language :: Python :: 3.13",
+        "Programming Language :: Python :: 3.14",
         "Topic :: Software Development :: Embedded Systems"
     ],
     install_requires=[
-        "stdatalog_pnpl==1.4.0",
-        "numpy==2.3.4",
+        "stdatalog_pnpl==1.5.0",
+        "numpy==2.5.2",
         "pyserial==3.5",
-        "pandas==2.3.3",
-        "h5py==3.15.0",
+        "pandas==3.0.5",
+        "h5py==3.16.0",
         "colorama==0.4.6",
-        "click==8.3.0",
-        "setuptools<81",
-        "dask==2025.11.0",
-        "fastparquet==2026.3.0",
+        "click==8.4.2",
+        "setuptools==84.0.0",
+        "dask==2026.7.1",
+        "fastparquet==2026.5.0",
         "plotly_resampler==0.11.0",
-        "python-statemachine==2.5.0"
+        "python-statemachine==3.2.1"
     ]
 )

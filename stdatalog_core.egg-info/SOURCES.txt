@@ -17,6 +17,12 @@ stdatalog_core/HSD/__init__.py
 stdatalog_core/HSD/model/AcquisitionInfo.py
 stdatalog_core/HSD/model/DeviceConfig.py
 stdatalog_core/HSD/model/__init__.py
+stdatalog_core/HSD/output_format/__init__.py
+stdatalog_core/HSD/output_format/compiler.py
+stdatalog_core/HSD/output_format/decoder.py
+stdatalog_core/HSD/output_format/framer.py
+stdatalog_core/HSD/output_format/models.py
+stdatalog_core/HSD/output_format/schemas/schema_vl53l9_v1.json
 stdatalog_core/HSD/utils/__init__.py
 stdatalog_core/HSD/utils/cli_interaction.py
 stdatalog_core/HSD/utils/file_manager.py

@@ -61,6 +61,7 @@ import warnings
 
 import json
 import os
+import operator
 import struct
 from threading import Thread
 
@@ -68,17 +69,24 @@ from datetime import datetime
 from dateutil import parser
 import numpy as np
 import pandas as pd
+
 try:
     from fastparquet import ParquetFile
 except Exception:
     ParquetFile = None
 
-from werkzeug.serving import make_server
+# from werkzeug.serving import make_server
 
 from plotly.subplots import make_subplots
 import plotly.graph_objects as go
 
 from stdatalog_core.HSD.utils.plot_utils import PlotUtils
+from stdatalog_core.HSD.output_format import (
+    OutputFormatDecoder,
+    VL53L9_RAW_DATA_DISCLAIMER,
+    column_names,
+    get_compiled,
+)
 from stdatalog_core.HSD_utils.exceptions import (
     MissingDeviceModelError,
     MissingAcquisitionInfoError,
@@ -99,7 +107,12 @@ from stdatalog_core.HSD.utils.cli_interaction import CLIInteraction as CLI
 from stdatalog_core.HSD.utils.file_manager import FileManager
 from stdatalog_core.HSD.utils.type_conversion import TypeConversion
 from stdatalog_pnpl.DTDL.dtdl_utils import MC_FAST_TELEMETRY_SENSITIVITY, UnitMap
-from stdatalog_pnpl.DTDL.device_template_manager import DeviceCatalogManager, DeviceTemplateManager
+from stdatalog_pnpl.DTDL.device_template_manager import (
+    DEFAULT_CATALOG_URL,
+    DEFAULT_DTDL_BASE_URL,
+    DeviceCatalogManager,
+    DeviceTemplateManager,
+)
 from stdatalog_pnpl.DTDL.device_template_model import ContentSchema, SchemaType
 from stdatalog_pnpl.DTDL.dtdl_utils import (
     DTDL_SENSORS_ID_COMP_KEY,
@@ -138,24 +151,28 @@ class ServerThread(Thread):
         - app: Dash application instance to serve.
         - port: int local TCP port for the HTTP server (default 8050).
         """
+        # Lazily import Werkzeug to allow optional Dash usage.
+        from werkzeug.serving import make_server
+
         Thread.__init__(self)
-        self.server = make_server("127.0.0.1", port, app.server)
+        self.server = make_server('127.0.0.1', port, app.server)
         self.ctx = app.server.app_context()
         self.ctx.push()
         self.running = True
 
     def run(self):
         """Start serving the Dash app forever on the configured port."""
-        log.debug(f"Starting Dash server for plotting on port {self.server.port}...")
+        log.debug(f'Starting Dash server for plotting on port {self.server.port}...')
         self.server.serve_forever()
-        log.debug("Dash server has started successfully.")
+        log.debug('Dash server has started successfully.')
 
     def shutdown(self):
         """Stop the server and mark the thread as no longer running."""
-        log.debug(f"Shutting down Dash server for plotting on port {self.server.port}...")
+        log.debug(f'Shutting down Dash server for plotting on port {self.server.port}...')
         self.server.shutdown()
         self.running = False
-        log.debug("Dash server has been shut down successfully.")
+        log.debug('Dash server has been shut down successfully.')
+
 
 class HSDatalog_v2:
     """Offline analyzer for STDatalog v2 acquisitions.
@@ -192,6 +209,7 @@ class HSDatalog_v2:
 
     # Class attributes that will be used to store device model, acquisition info model,
     # and ISPU output format (if any).
+    DISTANCE_VALUE_MASK = 0x7FFF
     device_model = None
     acq_info_model = None
     mlc_ispu_output_formats = {}
@@ -199,7 +217,13 @@ class HSDatalog_v2:
     __acq_folder_path = None
     __checkTimestamps = False
 
-    def __init__(self, acquisition_folder=None, update_catalog=True):
+    def __init__(
+        self,
+        acquisition_folder=None,
+        update_catalog=True,
+        catalog_url=DEFAULT_CATALOG_URL,
+        dtdl_base_url=DEFAULT_DTDL_BASE_URL,
+    ):
         """
         Initialize the HSDatalog_v2 instance.
         Parameters:
@@ -208,40 +232,38 @@ class HSDatalog_v2:
             update_catalog (bool, optional): If True, updates the device catalog
                 from the online repository. Default is True.
         """
+        DeviceCatalogManager.get_instance(dtdl_base_url)
+
         # Update the device catalog if the update_catalog flag is set to True
         if update_catalog:
-            DeviceCatalogManager.update_catalog()
+            DeviceCatalogManager.update_catalog(catalog_url, dtdl_base_url)
         # If an acquisition folder is provided, proceed with initialization.
         if acquisition_folder is not None:
             # Attempt to find and load the device configuration from the acquisition folder.
-            device_json_file_path = FileManager.find_file("device_config.json", acquisition_folder)
+            device_json_file_path = FileManager.find_file('device_config.json', acquisition_folder)
             if device_json_file_path is None:
                 # If the device configuration file is missing, raise an error.
                 raise MissingSensorModelError
             self.__load_device_from_file(device_json_file_path)
             # Attempt to find and load the acquisition information from the acquisition folder.
             try:
-                acquisition_json_file_path = FileManager.find_file(
-                    "acquisition_info.json", acquisition_folder
-                )
+                acquisition_json_file_path = FileManager.find_file('acquisition_info.json', acquisition_folder)
                 if acquisition_json_file_path is None:
                     # If the acquisition information file is missing, raise an error.
                     raise MissingAcquisitionInfoError
                 self.__load_acquisition_info_from_file(acquisition_json_file_path)
 
-                self.mlc_ispu_output_formats = self.extract_sensor_outputs_from_jsons(
-                    acquisition_folder
-                )
-                
+                self.mlc_ispu_output_formats = self.extract_sensor_outputs_from_jsons(acquisition_folder)
+
                 # ispu_output_json_file_path = FileManager.find_file(
                 #     "ispu_output_format.json", acquisition_folder
                 # )
                 # if ispu_output_json_file_path is not None:
-                #     self.__load_ispu_output_format(ispu_output_json_file_path)                
+                #     self.__load_ispu_output_format(ispu_output_json_file_path)
 
             except MissingAcquisitionInfoError:
                 # Log an error and raise it if the acquisition information file is missing.
-                log.error("No acquisition_info.json file in your Acquisition folder")
+                log.error('No acquisition_info.json file in your Acquisition folder')
                 raise
             except MissingDeviceModelError:
                 # Raise an error if the device model file is missing.
@@ -249,7 +271,7 @@ class HSDatalog_v2:
         else:
             # If no acquisition folder is provided, log a warning and set the device model and
             # acquisition info to None.
-            log.warning("Acquisition folder not provided.")
+            log.warning('Acquisition folder not provided.')
             self.device_model = None
             self.acq_info_model = None
 
@@ -292,9 +314,9 @@ class HSDatalog_v2:
         - MissingDeviceModelError: if device template resolution fails.
         """
         try:
-            with open(device_json_file_path, encoding="UTF-8") as f:
+            with open(device_json_file_path, encoding='UTF-8') as f:
                 file_content = f.read()
-                if file_content[-1] == "\x00":
+                if file_content[-1] == '\x00':
                     device_json_dict = json.loads(file_content[:-1])
                 else:
                     device_json_dict = json.loads(file_content)
@@ -319,9 +341,9 @@ class HSDatalog_v2:
         - MissingAcquisitionInfoError on read/parse failures.
         """
         try:
-            with open(acq_info_json_file_path, encoding="UTF-8") as f:
+            with open(acq_info_json_file_path, encoding='UTF-8') as f:
                 file_content = f.read()
-                if file_content[-1] == "\x00":
+                if file_content[-1] == '\x00':
                     acq_info_json_dict = json.loads(file_content[:-1])
                 else:
                     acq_info_json_dict = json.loads(file_content)
@@ -386,10 +408,10 @@ class HSDatalog_v2:
         """
         enum_dname = prop_content.schema.enum_values[prop_enum_index].display_name
         value = enum_dname if isinstance(enum_dname, str) else enum_dname.en
-        if prop_content.schema.value_schema.value == "integer":
-            num_value = value.replace(",", "").replace(".", "")
+        if prop_content.schema.value_schema.value == 'integer':
+            num_value = value.replace(',', '').replace('.', '')
             if num_value.isnumeric():
-                return float(value.replace(",", "."))
+                return float(value.replace(',', '.'))
         return value
 
     def __convert_enums_in_values(self, comp_dtdl_contents, comp_status):
@@ -428,56 +450,48 @@ class HSDatalog_v2:
         - MissingDeviceModelError if template could not be found.
         """
         if from_file:
-            self.device_model = device_dict["devices"][device_id]
+            self.device_model = device_dict['devices'][device_id]
         else:
             self.device_model = device_dict
 
-        board_id = hex(self.device_model["board_id"])
-        fw_id = hex(self.device_model["fw_id"])
+        board_id = hex(self.device_model['board_id'])
+        fw_id = hex(self.device_model['fw_id'])
 
         dev_template_json = DeviceCatalogManager.query_dtdl_model(board_id, fw_id)
         if isinstance(dev_template_json, dict):
             if dev_template_json == {}:
                 raise MissingDeviceModelError(board_id, fw_id)
-            components = self.device_model.get("components")
+            components = self.device_model.get('components')
             fw_name = None
             for c in components:
-                if c.get("firmware_info") is not None:
-                    fir_info = c.get("firmware_info")
-                    if fir_info.get("fw_name") is not None:
-                        fw_name = fir_info.get("fw_name")
+                if c.get('firmware_info') is not None:
+                    fir_info = c.get('firmware_info')
+                    if fir_info.get('fw_name') is not None:
+                        fw_name = fir_info.get('fw_name')
             # fw_name = self.device_model.get("components").get("firmware_info").get("fw_name")
             if fw_name is not None:
-                splitted_fw_name = fw_name.lower().split("-")
-                reformatted_fw_name = "".join(
-                    [splitted_fw_name[0]] + [f.capitalize() for f in splitted_fw_name[1:]]
-                )
+                splitted_fw_name = fw_name.lower().split('-')
+                reformatted_fw_name = ''.join([splitted_fw_name[0]] + [f.capitalize() for f in splitted_fw_name[1:]])
                 for dt in dev_template_json:
-                    if reformatted_fw_name.lower() in dev_template_json[dt][0].get("@id").lower():
+                    if reformatted_fw_name.lower() in dev_template_json[dt][0].get('@id').lower():
                         dev_template_json = dev_template_json[dt]
                         break
         dt_manager = DeviceTemplateManager(dev_template_json)
         self.components_dtdl = dt_manager.get_components()
         for comp_name in self.components_dtdl.keys():
-            comp_status = [
-                c for c in self.device_model.get("components") if list(c.keys())[0] == comp_name
-            ]
+            comp_status = [c for c in self.device_model.get('components') if list(c.keys())[0] == comp_name]
             if len(comp_status) > 0:
                 comp_status = comp_status[0].get(comp_name)
                 comp_dtdl_contents = [c for c in self.components_dtdl[comp_name].contents]
-                c_type = comp_status.get("c_type")
+                c_type = comp_status.get('c_type')
                 if c_type == ComponentTypeEnum.SENSOR.value:
-                    s_category = comp_status.get("sensor_category")
+                    s_category = comp_status.get('sensor_category')
                     if s_category == SensorCategoryEnum.ISENSOR_CLASS_MEMS.value:
-                        comp_status["unit"] = self.__get_sensor_unit_from_dtdl(
-                            "fs", comp_dtdl_contents
-                        )
+                        comp_status['unit'] = self.__get_sensor_unit_from_dtdl('fs', comp_dtdl_contents)
                         if from_file:
                             self.__convert_enums_in_values(comp_dtdl_contents, comp_status)
                     elif s_category == SensorCategoryEnum.ISENSOR_CLASS_AUDIO.value:
-                        comp_status["unit"] = self.__get_sensor_unit_from_dtdl(
-                            "aop", comp_dtdl_contents
-                        )
+                        comp_status['unit'] = self.__get_sensor_unit_from_dtdl('aop', comp_dtdl_contents)
                         if from_file:
                             self.__convert_enums_in_values(comp_dtdl_contents, comp_status)
                     elif s_category == SensorCategoryEnum.ISENSOR_CLASS_RANGING.value:
@@ -495,36 +509,25 @@ class HSDatalog_v2:
                         if from_file:
                             self.__convert_enums_in_values(comp_dtdl_contents, comp_status)
                     else:  # Retrocompatibility
-                        if (
-                            ":" + DTDL_SENSORS_ID_COMP_KEY + ":"
-                            in self.components_dtdl[comp_name].id
-                        ):  # "sensors":
+                        if ':' + DTDL_SENSORS_ID_COMP_KEY + ':' in self.components_dtdl[comp_name].id:  # "sensors":
                             s_info_contents = [
                                 c
                                 for c in self.components_dtdl[comp_name].contents
-                                if c.name == "odr" or c.name == "fs" or c.name == "aop"
+                                if c.name == 'odr' or c.name == 'fs' or c.name == 'aop'
                             ]
-                            comp_status = [
-                                x
-                                for x in self.device_model["components"]
-                                if list(x.keys())[0] == comp_name
-                            ]
+                            comp_status = [x for x in self.device_model['components'] if list(x.keys())[0] == comp_name]
                             if len(comp_status) > 0:
                                 if len(s_info_contents) > 0:
                                     for sc in s_info_contents:
-                                        if (
-                                            sc.name == "fs" or sc.name == "aop"
-                                        ) and sc.unit is not None:
-                                            comp_status[0][comp_name]["unit"] = sc.unit
-                                        elif (
-                                            sc.name == "fs" or sc.name == "aop"
-                                        ) and sc.display_unit is not None:
+                                        if (sc.name == 'fs' or sc.name == 'aop') and sc.unit is not None:
+                                            comp_status[0][comp_name]['unit'] = sc.unit
+                                        elif (sc.name == 'fs' or sc.name == 'aop') and sc.display_unit is not None:
                                             display_unit = (
                                                 sc.display_unit
                                                 if isinstance(sc.display_unit, str)
                                                 else sc.display_unit.en
                                             )
-                                            comp_status[0][comp_name]["unit"] = display_unit
+                                            comp_status[0][comp_name]['unit'] = display_unit
                                         if (
                                             from_file
                                             and sc.schema is not None
@@ -532,18 +535,16 @@ class HSDatalog_v2:
                                             and sc.schema.type == SchemaType.ENUM
                                         ):
                                             enum_index = comp_status[0][comp_name][sc.name]
-                                            prop_value = float(
-                                                self.__convert_prop_enum_in_value(enum_index, sc)
-                                            )
+                                            prop_value = float(self.__convert_prop_enum_in_value(enum_index, sc))
                                             comp_status[0][comp_name][sc.name] = prop_value
                                 else:
-                                    if "unit" not in comp_status[0][comp_name]:
-                                        comp_status[0][comp_name]["unit"] = ""
-        log.debug(f"Device Model: {self.device_model}")
+                                    if 'unit' not in comp_status[0][comp_name]:
+                                        comp_status[0][comp_name]['unit'] = ''
+        log.debug(f'Device Model: {self.device_model}')
 
     def get_file_dimension(self, component_name):
         """Return file size in bytes for the given component's .dat file, or None if missing."""
-        filepath = os.path.join(self.__acq_folder_path, f"{component_name}.dat")
+        filepath = os.path.join(self.__acq_folder_path, f'{component_name}.dat')
         if os.path.isfile(filepath):
             return os.path.getsize(filepath)
         return None
@@ -568,9 +569,9 @@ class HSDatalog_v2:
             return []
 
         component_names = []
-        for component in self.device_model.get("components", []):
+        for component in self.device_model.get('components', []):
             comp_name = list(component.keys())[0]
-            if comp_name.endswith("_mlc") or comp_name.endswith("_ispu"):
+            if comp_name.endswith('_mlc') or comp_name.endswith('_ispu'):
                 component_names.append(comp_name)
         return component_names
 
@@ -579,16 +580,16 @@ class HSDatalog_v2:
         ai_components = self.__get_ai_component_names()
 
         core_values = {
-            str(output.get("core")).upper()
+            str(output.get('core')).upper()
             for output in outputs
-            if isinstance(output, dict) and output.get("core") in ["MLC", "ISPU"]
+            if isinstance(output, dict) and output.get('core') in ['MLC', 'ISPU']
         }
         core = None
         if len(core_values) == 1:
             core = next(iter(core_values))
         elif len(core_values) > 1:
             log.warning(
-                "Mixed output cores found in %s. Falling back to component-name inference.",
+                'Mixed output cores found in %s. Falling back to component-name inference.',
                 source_path,
             )
 
@@ -600,25 +601,25 @@ class HSDatalog_v2:
                 continue
 
             for normalized_name in normalized_names:
-                if comp_name_lower.startswith(normalized_name + "_"):
+                if comp_name_lower.startswith(normalized_name + '_'):
                     candidate_components.append(comp_name)
                     break
 
         candidate_components = list(dict.fromkeys(candidate_components))
 
         if core is None and len(candidate_components) == 1:
-            if candidate_components[0].endswith("_mlc"):
-                core = "MLC"
-            elif candidate_components[0].endswith("_ispu"):
-                core = "ISPU"
+            if candidate_components[0].endswith('_mlc'):
+                core = 'MLC'
+            elif candidate_components[0].endswith('_ispu'):
+                core = 'ISPU'
 
         if core is None and len(outputs) == 0:
-            core = "MLC"
+            core = 'MLC'
 
-        if core == "MLC":
-            candidate_components = [comp for comp in candidate_components if comp.endswith("_mlc")]
-        elif core == "ISPU":
-            candidate_components = [comp for comp in candidate_components if comp.endswith("_ispu")]
+        if core == 'MLC':
+            candidate_components = [comp for comp in candidate_components if comp.endswith('_mlc')]
+        elif core == 'ISPU':
+            candidate_components = [comp for comp in candidate_components if comp.endswith('_ispu')]
 
         return candidate_components, core
 
@@ -627,29 +628,29 @@ class HSDatalog_v2:
             return
 
         result[comp_name] = {
-            "outputs": outputs if isinstance(outputs, list) and len(outputs) > 0 else None,
-            "core": core,
+            'outputs': outputs if isinstance(outputs, list) and len(outputs) > 0 else None,
+            'core': core,
         }
 
     def __load_legacy_ispu_output_format(self, result, json_file, data):
-        outputs = data.get("output")
+        outputs = data.get('output')
         if not isinstance(outputs, list) or len(outputs) == 0:
             return
 
         ispu_components = [
             comp_name
             for comp_name in self.__get_ai_component_names()
-            if comp_name.endswith("_ispu") and comp_name not in result
+            if comp_name.endswith('_ispu') and comp_name not in result
         ]
 
         if len(ispu_components) == 1:
-            self.__register_ai_output_entry(result, ispu_components[0], outputs, "ISPU")
+            self.__register_ai_output_entry(result, ispu_components[0], outputs, 'ISPU')
         elif len(ispu_components) > 1:
             log.warning(
-                "Legacy ISPU output format file %s is ambiguous across multiple ISPU components.",
+                'Legacy ISPU output format file %s is ambiguous across multiple ISPU components.',
                 json_file,
             )
-    
+
     def extract_sensor_outputs_from_jsons(self, acquisition_folder):
         """
         Search for JSON files in the acquisition_folder, extract sensors and their outputs.
@@ -659,16 +660,17 @@ class HSDatalog_v2:
             dict: {sensor_name: {"outputs": [...], "core": "ISPU"/"MLC" (if present)}}
         """
         result = {}
-        json_files = glob.glob(os.path.join(acquisition_folder, "*.json"))
+        json_files = glob.glob(os.path.join(acquisition_folder, '*.json'))
         for json_file in json_files:
             try:
-                with open(json_file, "r", encoding="utf-8") as f:
+                with open(json_file, 'r', encoding='utf-8') as f:
                     data = json.load(f)
+
                 # Look for "sensors" key at any level
                 def find_sensors(obj):
                     if isinstance(obj, dict):
                         for k, v in obj.items():
-                            if k == "sensors" and isinstance(v, list):
+                            if k == 'sensors' and isinstance(v, list):
                                 return v
                             found = find_sensors(v)
                             if found:
@@ -679,20 +681,21 @@ class HSDatalog_v2:
                             if found:
                                 return found
                     return None
+
                 sensors = find_sensors(data)
                 if sensors:
                     for sensor in sensors:
                         if not isinstance(sensor, dict):
                             continue
 
-                        outputs = sensor.get("outputs")
+                        outputs = sensor.get('outputs')
                         if outputs is None:
                             outputs = []
                         if not isinstance(outputs, list):
                             continue
 
                         candidate_components, core = self.__resolve_ai_component_names(
-                            sensor.get("name"), outputs, json_file
+                            sensor.get('name'), outputs, json_file
                         )
                         for comp_name in candidate_components:
                             self.__register_ai_output_entry(result, comp_name, outputs, core)
@@ -727,48 +730,43 @@ class HSDatalog_v2:
         """
         if from_file:
             # Update the device_model attribute with the first device from the new_device dictionary
-            self.device_model = new_device["devices"][device_id]
+            self.device_model = new_device['devices'][device_id]
         else:
             self.device_model = new_device
         # Call the private method '__load_device' to load the device configuration
         self.__load_device(new_device, device_id, from_file)
         # Retrieve firmware information from the device
-        fw_info = self.get_firmware_info()["firmware_info"]
+        fw_info = self.get_firmware_info()['firmware_info']
         # Log the device information, including alias, firmware name, and version
         # Check if part number is available and include it in the log message
-        if "part_number" in fw_info:
+        if 'part_number' in fw_info:
             log.info(
                 (
-                    f"Device [{fw_info['alias']}] - {fw_info['fw_name']} "
-                    f"v{fw_info['fw_version']} "
-                    f"sn:{fw_info['part_number']} loaded correctly!"
+                    f'Device [{fw_info["alias"]}] - {fw_info["fw_name"]} '
+                    f'v{fw_info["fw_version"]} '
+                    f'sn:{fw_info["part_number"]} loaded correctly!'
                 )
             )
         # If part number is not available, check for serial number and include it in the log message
-        elif "serial_number" in fw_info:
+        elif 'serial_number' in fw_info:
             log.info(
                 (
-                    f"Device [{fw_info['alias']}] - {fw_info['fw_name']} "
-                    f"v{fw_info['fw_version']} "
-                    f"sn:{fw_info['serial_number']} loaded correctly!"
+                    f'Device [{fw_info["alias"]}] - {fw_info["fw_name"]} '
+                    f'v{fw_info["fw_version"]} '
+                    f'sn:{fw_info["serial_number"]} loaded correctly!'
                 )
             )
         # If neither part number nor serial number is available, log the information without them
         else:
-            log.info(
-                (
-                    f"Device [{fw_info['alias']}] - {fw_info['fw_name']} "
-                    f"v{fw_info['fw_version']} loaded correctly!"
-                )
-            )
+            log.info((f'Device [{fw_info["alias"]}] - {fw_info["fw_name"]} v{fw_info["fw_version"]} loaded correctly!'))
 
     def get_device_info(self):
         """Return the DeviceInformation component dict from the device model."""
-        return self.get_component("DeviceInformation")
+        return self.get_component('DeviceInformation')
 
     def get_firmware_info(self):
         """Return the firmware_info component dict from the device model, or None."""
-        return self.get_component("firmware_info")
+        return self.get_component('firmware_info')
 
     def set_device_info(self, new_device_info):
         """Set a device_info object/dict (v2 keeps JSON), without validation."""
@@ -782,16 +780,16 @@ class HSDatalog_v2:
         - MissingDeviceModelError if device_model is not loaded.
         """
         if self.device_model is not None:
-            components = self.device_model["components"]
+            components = self.device_model['components']
             for c in components:
                 if list(c)[0] == component_name:
                     return c
-            log.error(f"No Model loaded for {component_name} Component")
+            log.error(f'No Model loaded for {component_name} Component')
             raise MissingComponentModelError
-        log.error("No Device Model loaded!")
+        log.error('No Device Model loaded!')
         raise MissingDeviceModelError
 
-    def get_sensor_list(self, type_filter="", only_active=False):
+    def get_sensor_list(self, type_filter='', only_active=False):
         """List sensor components with optional type filter and enabled-only listing.
 
         Parameters:
@@ -802,25 +800,22 @@ class HSDatalog_v2:
         - list[dict]: component entries as in device_model['components'].
         """
         active_sensors = []
-        sensor_list = self.device_model["components"]
+        sensor_list = self.device_model['components']
         for s in sensor_list:
             for element in s[list(s)[0]]:
-                if (
-                    element == "c_type"
-                    and s[list(s)[0]]["c_type"] == ComponentTypeEnum.SENSOR.value
-                ):
-                    if type_filter == "":
+                if element == 'c_type' and s[list(s)[0]]['c_type'] == ComponentTypeEnum.SENSOR.value:
+                    if type_filter == '':
                         if only_active:
-                            if "enable" in s[list(s)[0]] and s[list(s)[0]]["enable"] is True:
+                            if 'enable' in s[list(s)[0]] and s[list(s)[0]]['enable'] is True:
                                 active_sensors.append(s)
                         else:
                             active_sensors.append(s)
                     else:
-                        sensor_type = str(list(s)[0]).lower().rsplit("_", maxsplit=1)[-1]
+                        sensor_type = str(list(s)[0]).lower().rsplit('_', maxsplit=1)[-1]
                         if only_active:
                             if (
-                                "enable" in s[list(s)[0]]
-                                and s[list(s)[0]]["enable"] is True
+                                'enable' in s[list(s)[0]]
+                                and s[list(s)[0]]['enable'] is True
                                 and sensor_type == type_filter.lower()
                             ):
                                 active_sensors.append(s)
@@ -829,28 +824,25 @@ class HSDatalog_v2:
                                 active_sensors.append(s)
         return active_sensors
 
-    def get_algorithm_list(self, type_filter="", only_active=False):
+    def get_algorithm_list(self, type_filter='', only_active=False):
         """List algorithm components optionally filtered and enabled-only."""
         active_algos = []
-        algo_list = self.device_model["components"]
+        algo_list = self.device_model['components']
         for s in algo_list:
             for element in s[list(s)[0]]:
-                if (
-                    element == "c_type"
-                    and s[list(s)[0]]["c_type"] == ComponentTypeEnum.ALGORITHM.value
-                ):
-                    if type_filter == "":
+                if element == 'c_type' and s[list(s)[0]]['c_type'] == ComponentTypeEnum.ALGORITHM.value:
+                    if type_filter == '':
                         if only_active:
-                            if "enable" in s[list(s)[0]] and s[list(s)[0]]["enable"] is True:
+                            if 'enable' in s[list(s)[0]] and s[list(s)[0]]['enable'] is True:
                                 active_algos.append(s)
                         else:
                             active_algos.append(s)
                     else:
-                        sensor_type = str(list(s)[0]).lower().rsplit("_", maxsplit=1)[-1]
+                        sensor_type = str(list(s)[0]).lower().rsplit('_', maxsplit=1)[-1]
                         if only_active:
                             if (
-                                "enable" in s[list(s)[0]]
-                                and s[list(s)[0]]["enable"] is True
+                                'enable' in s[list(s)[0]]
+                                and s[list(s)[0]]['enable'] is True
                                 and sensor_type == type_filter.lower()
                             ):
                                 active_algos.append(s)
@@ -862,15 +854,12 @@ class HSDatalog_v2:
     def get_actuator_list(self, only_active=False):
         """List actuator components, optionally only enabled ones."""
         active_actuators = []
-        actuator_list = self.device_model["components"]
+        actuator_list = self.device_model['components']
         for ac in actuator_list:
             for element in ac[list(ac)[0]]:
-                if (
-                    element == "c_type"
-                    and ac[list(ac)[0]]["c_type"] == ComponentTypeEnum.ACTUATOR.value
-                ):
+                if element == 'c_type' and ac[list(ac)[0]]['c_type'] == ComponentTypeEnum.ACTUATOR.value:
                     if only_active:
-                        if "enable" in ac[list(ac)[0]] and ac[list(ac)[0]]["enable"] is True:
+                        if 'enable' in ac[list(ac)[0]] and ac[list(ac)[0]]['enable'] is True:
                             active_actuators.append(ac)
                     else:
                         active_actuators.append(ac)
@@ -881,26 +870,18 @@ class HSDatalog_v2:
         Looks into `tags_info` and returns entries whose keys contain 'sw_tag'.
         """
         if self.device_model is not None:
-            tags_info_dict = self.get_component("tags_info")
+            tags_info_dict = self.get_component('tags_info')
             if tags_info_dict is not None:
-                return {
-                    key: value
-                    for key, value in tags_info_dict["tags_info"].items()
-                    if "sw_tag" in key
-                }
+                return {key: value for key, value in tags_info_dict['tags_info'].items() if 'sw_tag' in key}
             return {}
         return None
 
     def get_hw_tag_classes(self):
         """Return dict of hardware tag classes from tags_info or None if missing."""
         if self.device_model is not None:
-            tags_info_dict = self.get_component("tags_info")
+            tags_info_dict = self.get_component('tags_info')
             if tags_info_dict is not None:
-                return {
-                    key: value
-                    for key, value in tags_info_dict["tags_info"].items()
-                    if "hw_tag" in key
-                }
+                return {key: value for key, value in tags_info_dict['tags_info'].items() if 'hw_tag' in key}
         return None
 
     def get_acquisition_info(self):
@@ -913,16 +894,16 @@ class HSDatalog_v2:
 
     def get_acquisition_interface(self):
         """Return numeric interface id from acquisition_info (0:SD,1:USB,2:BLE,3:Serial)."""
-        return self.acq_info_model["interface"]
+        return self.acq_info_model['interface']
 
     def get_acquisition_label_classes(self):
         """Return sorted unique tag labels from acquisition_info, or []/None with warnings."""
         if self.acq_info_model is not None:
-            if "tags" in self.acq_info_model:
-                return sorted(set(dic["l"] for dic in self.acq_info_model["tags"]))
-            log.warning("No defined tag classes in Acquisition Information Component status.")
+            if 'tags' in self.acq_info_model:
+                return sorted(set(dic['l'] for dic in self.acq_info_model['tags']))
+            log.warning('No defined tag classes in Acquisition Information Component status.')
             return []
-        log.warning("Empty Acquisition Info model.")
+        log.warning('Empty Acquisition Info model.')
         return None
 
     def get_time_tags(self, which_tags=None):
@@ -941,24 +922,24 @@ class HSDatalog_v2:
         """
         time_labels = []
         if self.acq_info_model is not None:
-            acq_start_time = self.acq_info_model["start_time"]
-            acq_end_time = self.acq_info_model["end_time"]
-            self.s_t = datetime.strptime(acq_start_time, "%Y-%m-%dT%H:%M:%S.%fZ")
+            acq_start_time = self.acq_info_model['start_time']
+            acq_end_time = self.acq_info_model['end_time']
+            self.s_t = datetime.strptime(acq_start_time, '%Y-%m-%dT%H:%M:%S.%fZ')
 
             # Extract tags from acquisition info model status
-            tags = self.acq_info_model.get("tags", [])
+            tags = self.acq_info_model.get('tags', [])
             if tags == []:
-                log.warning("No defined tags in Acquisition Information Component status.")
+                log.warning('No defined tags in Acquisition Information Component status.')
                 return []
 
             if which_tags is not None:
-                tags = [tag for tag in tags if tag["l"] in which_tags]
+                tags = [tag for tag in tags if tag['l'] in which_tags]
 
             for lbl in self.get_acquisition_label_classes():
                 # start_time, end_time are vectors
                 # with the corresponding 't' entries in DataTag-json
-                start_time = np.array([t["ta"] for t in tags if t["l"] == lbl and t["e"]])
-                end_time = np.array([t["ta"] for t in tags if t["l"] == lbl and not t["e"]])
+                start_time = np.array([t['ta'] for t in tags if t['l'] == lbl and t['e']])
+                end_time = np.array([t['ta'] for t in tags if t['l'] == lbl and not t['e']])
                 # now must associate at each start tag the appropriate end tag
                 # (some may be missing because of errors in the tagging process)
                 for tstart in start_time:
@@ -968,16 +949,12 @@ class HSDatalog_v2:
                         tend = end_time[min(jj)]
                     else:
                         tend = acq_end_time  # if no 'end tag' found the end is eof
-                    tag["label"] = lbl
-                    tag["time_start"] = (
-                        datetime.strptime(tstart, "%Y-%m-%dT%H:%M:%S.%fZ") - self.s_t
-                    ).total_seconds()
-                    tag["time_end"] = (
-                        datetime.strptime(tend, "%Y-%m-%dT%H:%M:%S.%fZ") - self.s_t
-                    ).total_seconds()
+                    tag['label'] = lbl
+                    tag['time_start'] = (datetime.strptime(tstart, '%Y-%m-%dT%H:%M:%S.%fZ') - self.s_t).total_seconds()
+                    tag['time_end'] = (datetime.strptime(tend, '%Y-%m-%dT%H:%M:%S.%fZ') - self.s_t).total_seconds()
                     time_labels.append(tag)
             return time_labels
-        log.error("Empty Acquisition Info model.")
+        log.error('Empty Acquisition Info model.')
         raise MissingAcquisitionInfoError
 
     # Helper function to convert ISO8601 time strings to seconds
@@ -997,56 +974,50 @@ class HSDatalog_v2:
         - list[{'label': str, 'times': list[tuple(float,float)]}]
         """
         tags = []
-        acq_start_time = self.acq_info_model["start_time"]
-        acq_end_time = self.acq_info_model["end_time"]
-        tags_array = self.acq_info_model["tags"]
+        acq_start_time = self.acq_info_model['start_time']
+        acq_end_time = self.acq_info_model['end_time']
+        tags_array = self.acq_info_model['tags']
         acq_duration = self.get_seconds_from_ISO8601(acq_start_time, acq_end_time)
 
         tag_labels = []
         for i in range(len(tags_array)):
             start_tag = tags_array[i]
-            if start_tag["e"]:
-                tag_label = start_tag["l"]
-                tag_start_time = start_tag["ta"]
+            if start_tag['e']:
+                tag_label = start_tag['l']
+                tag_start_time = start_tag['ta']
                 tag_start_seconds = self.get_seconds_from_ISO8601(acq_start_time, tag_start_time)
                 tag_end_seconds = acq_duration
                 for j in range(i, len(tags_array)):
                     end_tag = tags_array[j]
-                    if end_tag["l"] == tag_label and not end_tag["e"]:
-                        tag_end_time = end_tag["ta"]
-                        tag_end_seconds = self.get_seconds_from_ISO8601(
-                            acq_start_time, tag_end_time
-                        )
+                    if end_tag['l'] == tag_label and not end_tag['e']:
+                        tag_end_time = end_tag['ta']
+                        tag_end_seconds = self.get_seconds_from_ISO8601(acq_start_time, tag_end_time)
                         break
                 if tag_label in tag_labels:
                     # Already present in tags list --> ADD tag_times!
                     for tag in tags:
-                        if tag["label"] == tag_label:
-                            tag["times"].append((tag_start_seconds, tag_end_seconds))
+                        if tag['label'] == tag_label:
+                            tag['times'].append((tag_start_seconds, tag_end_seconds))
                 else:
                     tag_labels.append(tag_label)
-                    tags.append(
-                        {"label": tag_label, "times": [(tag_start_seconds, tag_end_seconds)]}
-                    )
+                    tags.append({'label': tag_label, 'times': [(tag_start_seconds, tag_end_seconds)]})
 
         return tags
 
     def __get_active_mc_telemetries_names(self, ss_stat, comp_name):
         """Return active Motor Control telemetry names for slow/fast streams."""
-        if comp_name == "slow_mc_telemetries":
-            desc_telemetry = ss_stat.get("st_ble_stream")
+        if comp_name == 'slow_mc_telemetries':
+            desc_telemetry = ss_stat.get('st_ble_stream')
             return [
                 st
                 for st in desc_telemetry
-                if isinstance(desc_telemetry[st], dict) and desc_telemetry[st].get("enable") is True
+                if isinstance(desc_telemetry[st], dict) and desc_telemetry[st].get('enable') is True
             ]
-        elif comp_name == "fast_mc_telemetries":
+        elif comp_name == 'fast_mc_telemetries':
             return [
                 k
                 for k in ss_stat.keys()
-                if isinstance(ss_stat[k], dict)
-                and k != "sensitivity"
-                and ss_stat[k]["enabled"] is True
+                if isinstance(ss_stat[k], dict) and k != 'sensitivity' and ss_stat[k]['enabled'] is True
             ]
 
     def __process_datalog(
@@ -1097,48 +1068,47 @@ class HSDatalog_v2:
             - timestamps: list of float with extracted timestamps
             """
 
-            sensor_name_contains_mlc_ispu = "_mlc" in sensor_name or "_ispu" in sensor_name
+            sensor_name_contains_mlc_ispu = '_mlc' in sensor_name or '_ispu' in sensor_name
             check_timestamps = False
             frame_period = 0
             if c_type == ComponentTypeEnum.SENSOR.value:
-                s_category = ss_stat.get("sensor_category")
+                s_category = ss_stat.get('sensor_category')
                 if self.__checkTimestamps is True:
                     check_timestamps = not sensor_name_contains_mlc_ispu
                 else:
                     check_timestamps = False
                 if s_category == SensorCategoryEnum.ISENSOR_CLASS_LIGHT.value:
                     odr = (
-                        1 / (ss_stat.get("intermeasurement_time") / 1000)
-                        if ss_stat.get("intermeasurement_time")
-                        > ss_stat.get("exposure_time") / 1000 + 6
-                        else (1 / ((ss_stat.get("exposure_time") / 1000 + 6) / 1000))
+                        1 / (ss_stat.get('intermeasurement_time') / 1000)
+                        if ss_stat.get('intermeasurement_time') > ss_stat.get('exposure_time') / 1000 + 6
+                        else (1 / ((ss_stat.get('exposure_time') / 1000 + 6) / 1000))
                     )
                     frame_period = 0 if sensor_name_contains_mlc_ispu else samples_per_ts / odr
                 elif s_category == SensorCategoryEnum.ISENSOR_CLASS_POWERMETER.value:
                     frame_period = (
                         0
                         if sensor_name_contains_mlc_ispu
-                        else samples_per_ts / (1 / (ss_stat.get("adc_conversion_time") / 1000000))
+                        else samples_per_ts / (1 / (ss_stat.get('adc_conversion_time') / 1000000))
                     )
                 else:
-                    measodr = ss_stat.get("measodr")
+                    measodr = ss_stat.get('measodr')
                     if measodr is None or measodr == 0:
-                        measodr = ss_stat.get("odr")
+                        measodr = ss_stat.get('odr')
                     frame_period = 0 if sensor_name_contains_mlc_ispu else samples_per_ts / measodr
             elif c_type == ComponentTypeEnum.ALGORITHM.value:
                 check_timestamps = False
-                if ss_stat.get("algorithm_type") == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
-                    fft_sample_freq = ss_stat.get("fft_sample_freq")
+                if ss_stat.get('algorithm_type') == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
+                    fft_sample_freq = ss_stat.get('fft_sample_freq')
                     frame_period = samples_per_ts / fft_sample_freq
                 else:
                     frame_period = 0
-                algo_type = ss_stat.get("algorithm_type")
+                algo_type = ss_stat.get('algorithm_type')
             elif c_type == ComponentTypeEnum.ACTUATOR.value:
                 check_timestamps = False
-                if "samples_per_ts" not in ss_stat:
+                if 'samples_per_ts' not in ss_stat:
                     frame_period = 0
                 else:
-                    frame_period = samples_per_ts / ss_stat.get("odr")
+                    frame_period = samples_per_ts / ss_stat.get('odr')
 
             # rndDataBuffer = raw_data rounded to an integer # of frames
             rnd_data_buffer = raw_data[: int(frame_size * num_frames)]
@@ -1146,7 +1116,7 @@ class HSDatalog_v2:
             if start_time != 0:
                 timestamp_first = start_time
             else:
-                timestamp_first = ss_stat.get("ioffset", 0)
+                timestamp_first = ss_stat.get('ioffset', 0)
             timestamps = []
             data_type = TypeConversion.get_np_dtype(data_type_string)
             data = np.zeros((data1D_per_frame * num_frames, 1), dtype=data_type)
@@ -1156,16 +1126,14 @@ class HSDatalog_v2:
                     start_frame = ii * frame_size
                     # segment_data = data in the current frame
                     segment_data = rnd_data_buffer[start_frame : start_frame + dataframe_size]
-                    if data_type_string in ("int24", "int24_t"):
+                    if data_type_string in ('int24', 'int24_t'):
                         segment_data = TypeConversion.int24_buffer_to_int32_buffer(segment_data)
 
                     # segment_tS = ts is at the end of each frame
-                    segment_ts = rnd_data_buffer[
-                        start_frame + dataframe_size : start_frame + frame_size
-                    ]
+                    segment_ts = rnd_data_buffer[start_frame + dataframe_size : start_frame + frame_size]
 
                     # timestamp of current frame
-                    timestamps.append(np.frombuffer(segment_ts, dtype="double")[0])
+                    timestamps.append(np.frombuffer(segment_ts, dtype='double')[0])
 
                     # Data of current frame
                     data_range = slice(ii * data1D_per_frame, (ii + 1) * data1D_per_frame)
@@ -1182,14 +1150,12 @@ class HSDatalog_v2:
                         ):
                             data[data_range, 0] = 0
                             timestamps[ii] = timestamps[ii - 1] + frame_period
-                            log.warning(
-                                f"Sensor {sensor_name}: corrupted data at {timestamps[ii]} sec"
-                            )
+                            log.warning(f'Sensor {sensor_name}: corrupted data at {timestamps[ii]} sec')
             else:
-                if data_type_string in ("int24", "int24_t"):
+                if data_type_string in ('int24', 'int24_t'):
                     rnd_data_buffer = TypeConversion.int24_buffer_to_int32_buffer(rnd_data_buffer)
                 data = np.frombuffer(rnd_data_buffer, dtype=data_type)
-                is_first_chunk = ss_stat.get("is_first_chunk", False)
+                is_first_chunk = ss_stat.get('is_first_chunk', False)
                 if is_first_chunk:
                     start_time = timestamp_first
                     stop_time = timestamp_first + (num_frames * frame_period)
@@ -1197,44 +1163,40 @@ class HSDatalog_v2:
                     start_time = timestamp_first + frame_period
                     stop_time = timestamp_first + frame_period + (num_frames * frame_period)
 
-                timestamps = np.arange(
-                    start=start_time, stop=stop_time, step=frame_period, dtype=np.float64
-                )
+                timestamps = np.arange(start=start_time, stop=stop_time, step=frame_period, dtype=np.float64)
 
                 timestamps = timestamps[:num_frames]
 
             if c_type == ComponentTypeEnum.SENSOR.value:
-                s_dim = ss_stat.get("dim", 1)
-                if raw_flag:
-                    s_data = np.reshape(
-                        data, (-1, dataframe_size if "_ispu" in sensor_name else s_dim)
-                    )
+                s_dim = ss_stat.get('dim', 1)
+                if isinstance(ss_stat.get('output_format'), str):
+                    s_data = np.reshape(data, (-1, s_dim))
+                elif raw_flag:
+                    s_data = np.reshape(data, (-1, dataframe_size if '_ispu' in sensor_name else s_dim))
                 else:
-                    s_data = np.reshape(
-                        data, (-1, dataframe_size if "_ispu" in sensor_name else s_dim)
-                    ).astype(dtype=np.byte if "_ispu" in sensor_name else np.float32)
-                    sensitivity = float(ss_stat.get("sensitivity", 1))
-                    np.multiply(s_data, sensitivity, out=s_data, casting="unsafe")
+                    s_data = np.reshape(data, (-1, dataframe_size if '_ispu' in sensor_name else s_dim)).astype(
+                        dtype=np.byte if '_ispu' in sensor_name else np.float32
+                    )
+                    sensitivity = float(ss_stat.get('sensitivity', 1))
+                    np.multiply(s_data, sensitivity, out=s_data, casting='unsafe')
             elif c_type == ComponentTypeEnum.ALGORITHM.value:
                 if algo_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
-                    s_data = np.reshape(data, (-1, ss_stat["fft_length"])).astype(dtype=np.float32)
+                    s_data = np.reshape(data, (-1, ss_stat['fft_length'])).astype(dtype=np.float32)
                 if not raw_flag:
-                    sensitivity = float(ss_stat.get("sensitivity", 1))
-                    np.multiply(s_data, sensitivity, out=s_data, casting="unsafe")
+                    sensitivity = float(ss_stat.get('sensitivity', 1))
+                    np.multiply(s_data, sensitivity, out=s_data, casting='unsafe')
             elif c_type == ComponentTypeEnum.ACTUATOR.value:
                 if sensor_name in (MC_SLOW_TELEMETRY_COMP_NAME, MC_FAST_TELEMETRY_COMP_NAME):
-                    active_fast_telemetries = self.__get_active_mc_telemetries_names(
-                        ss_stat, sensor_name
-                    )
+                    active_fast_telemetries = self.__get_active_mc_telemetries_names(ss_stat, sensor_name)
                     nof_telemetries = len(active_fast_telemetries)
                     s_data = np.reshape(data, (-1, nof_telemetries)).astype(dtype=np.float32)
                 if sensor_name == MC_FAST_TELEMETRY_COMP_NAME and not raw_flag:
-                    scaler_current = ss_stat[MC_FAST_TELEMETRY_SENSITIVITY]["current"]
-                    scaler_voltage = ss_stat[MC_FAST_TELEMETRY_SENSITIVITY]["voltage"]
+                    scaler_current = ss_stat[MC_FAST_TELEMETRY_SENSITIVITY]['current']
+                    scaler_voltage = ss_stat[MC_FAST_TELEMETRY_SENSITIVITY]['voltage']
                     for idx, t in enumerate(active_fast_telemetries):
-                        if "i" in t:
+                        if 'i' in t:
                             s_data[:, idx] = s_data[:, idx] * scaler_current
-                        elif "v" in t:
+                        elif 'v' in t:
                             s_data[:, idx] = s_data[:, idx] * scaler_voltage
 
             if len(data) == 0:
@@ -1244,8 +1206,8 @@ class HSDatalog_v2:
             if samples_per_ts > 1:
                 # initial_offset is relevant
                 frames = num_frames
-                ioffset = ss_stat.get("ioffset", 0)
-                is_first_chunk = ss_stat.get("is_first_chunk", False)
+                ioffset = ss_stat.get('ioffset', 0)
+                is_first_chunk = ss_stat.get('is_first_chunk', False)
 
                 if start_time != 0 and is_first_chunk:
                     if prev_timestamp is not None:
@@ -1258,7 +1220,7 @@ class HSDatalog_v2:
                 # NOTE! Update the ioffset with the last extracted timestamp to allow
                 # eventual batch processing (this will be the start timestamp to continue
                 # the linear interpolation for the next chunk)
-                ss_stat["ioffset"] = timestamps[-1]
+                ss_stat['ioffset'] = timestamps[-1]
                 samples_times = np.zeros((frames * samples_per_ts, 1))
                 samples_times.fill(-1)
 
@@ -1266,19 +1228,15 @@ class HSDatalog_v2:
                 for ii in range(frames):  # For each Frame:
                     delta_ts = abs(timestamps[ii + 1] - timestamps[ii])
                     if frame_period > 0 and delta_ts > frame_period + frame_period * 0.33:
-                        samples_times[ii * samples_per_ts : (ii + 1) * samples_per_ts, 0] = (
-                            np.linspace(
-                                timestamps[ii + 1] - frame_period,
-                                timestamps[ii + 1],
-                                samples_per_ts,
-                                endpoint=False,
-                            )
+                        samples_times[ii * samples_per_ts : (ii + 1) * samples_per_ts, 0] = np.linspace(
+                            timestamps[ii + 1] - frame_period,
+                            timestamps[ii + 1],
+                            samples_per_ts,
+                            endpoint=False,
                         )
                     else:
-                        samples_times[ii * samples_per_ts : (ii + 1) * samples_per_ts, 0] = (
-                            np.linspace(
-                                timestamps[ii], timestamps[ii + 1], samples_per_ts, endpoint=False
-                            )
+                        samples_times[ii * samples_per_ts : (ii + 1) * samples_per_ts, 0] = np.linspace(
+                            timestamps[ii], timestamps[ii + 1], samples_per_ts, endpoint=False
                         )
             else:
                 # if samples_per_ts is 1, the timestamps coincides with the sample timestamp
@@ -1288,7 +1246,7 @@ class HSDatalog_v2:
                     # NOTE! Update the ioffset with the last extracted timestamp to allow
                     # eventual batch processing (this will be the start timestamp to continue
                     # the linear interpolation for the next chunk)
-                    ss_stat["ioffset"] = timestamps[-1]
+                    ss_stat['ioffset'] = timestamps[-1]
 
             valid_indices = samples_times != -1
             samples_times = samples_times[valid_indices.flatten()]
@@ -1298,7 +1256,7 @@ class HSDatalog_v2:
 
         #####################################################################
         # get component type
-        c_type = ss_stat.get("c_type")
+        c_type = ss_stat.get('c_type')
 
         # size of the frame. A frame is data + ts
         frame_size = dataframe_size + timestamp_size
@@ -1307,7 +1265,7 @@ class HSDatalog_v2:
         num_frames = len(raw_data) // frame_size
 
         # force int8 data_type for ISPU
-        data_type_string = "int8" if "_ispu" in sensor_name else ss_stat["data_type"]
+        data_type_string = 'int8' if '_ispu' in sensor_name else ss_stat['data_type']
         data_type_byte_num = TypeConversion.check_type_length(data_type_string)
 
         # data1D_per_frame = number of data samples in 1 frame
@@ -1315,41 +1273,38 @@ class HSDatalog_v2:
         data1D_per_frame = int(dataframe_size / data_type_byte_num)
 
         # samples per timestamp
-        spts = ss_stat.get("samples_per_ts", {})
+        spts = ss_stat.get('samples_per_ts', {})
         if isinstance(spts, int):
             samples_per_ts = spts
         else:
-            samples_per_ts = spts.get("val", 0)
+            samples_per_ts = spts.get('val', 0)
 
         if c_type == ComponentTypeEnum.SENSOR.value:
-            samples_per_ts = samples_per_ts or int(data1D_per_frame / ss_stat.get("dim", 1))
+            samples_per_ts = samples_per_ts or int(data1D_per_frame / ss_stat.get('dim', 1))
         if c_type == ComponentTypeEnum.ALGORITHM.value:
-            algo_type = ss_stat.get("algorithm_type")
+            algo_type = ss_stat.get('algorithm_type')
             if algo_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
                 samples_per_ts = 1
         elif c_type == ComponentTypeEnum.ACTUATOR.value:
             nof_telemetries = 0
-            if sensor_name == "slow_mc_telemetries":
-                desc_telemetry = ss_stat.get("st_ble_stream")
+            if sensor_name == 'slow_mc_telemetries':
+                desc_telemetry = ss_stat.get('st_ble_stream')
                 nof_telemetries = len(
                     [
                         st
                         for st in desc_telemetry
-                        if isinstance(desc_telemetry[st], dict)
-                        and desc_telemetry[st].get("enable") == True
+                        if isinstance(desc_telemetry[st], dict) and desc_telemetry[st].get('enable') == True
                     ]
                 )
-            elif sensor_name == "fast_mc_telemetries":
+            elif sensor_name == 'fast_mc_telemetries':
                 nof_telemetries = len(
                     [
                         k
                         for k in ss_stat.keys()
-                        if isinstance(ss_stat[k], dict)
-                        and k != "sensitivity"
-                        and ss_stat[k]["enabled"] == True
+                        if isinstance(ss_stat[k], dict) and k != 'sensitivity' and ss_stat[k]['enabled'] == True
                     ]
                 )
-            if "samples_per_ts" not in ss_stat:
+            if 'samples_per_ts' not in ss_stat:
                 samples_per_ts = dataframe_size // data_type_byte_num // nof_telemetries
 
         return extract_data_and_timestamps(start_time)
@@ -1379,7 +1334,7 @@ class HSDatalog_v2:
         """
         file_path = os.path.join(self.__acq_folder_path, FileManager.encode_file_name(sensor_name))
         if not os.path.exists(file_path):
-            log.error(f"No such file or directory: {file_path} found for {sensor_name} sensor")
+            log.error(f'No such file or directory: {file_path} found for {sensor_name} sensor')
             raise MissingFileForSensorError(file_path, sensor_name)
         return file_path
 
@@ -1396,17 +1351,10 @@ class HSDatalog_v2:
         Raises:
         - MissingFileForSensorError if file is not found
         """
-        file_path = os.path.join(
-            self.__acq_folder_path, FileManager.encode_file_name(sensor_name + "_checked")
-        )
+        file_path = os.path.join(self.__acq_folder_path, FileManager.encode_file_name(sensor_name + '_checked'))
         if not os.path.exists(file_path):
-            log.error(
-                (
-                    f"No such file or directory: {file_path} found for "
-                    f"{sensor_name + '_checked'} sensor"
-                )
-            )
-            raise MissingFileForSensorError(file_path, sensor_name + "_checked")
+            log.error((f'No such file or directory: {file_path} found for {sensor_name + "_checked"} sensor'))
+            raise MissingFileForSensorError(file_path, sensor_name + '_checked')
         return file_path
 
     def remove_4bytes_every_n_optimized(self, arr, N):
@@ -1429,9 +1377,7 @@ class HSDatalog_v2:
         # Concatenate the remaining slices and return the result
         return new_arr
 
-    def get_data_and_timestamps_batch(
-        self, comp_name, comp_status, start_time=0, end_time=-1, raw_flag=False
-    ):
+    def get_data_and_timestamps_batch(self, comp_name, comp_status, start_time=0, end_time=-1, raw_flag=False):
         """
         Batch-parse a component .dat file into data and timestamps.
 
@@ -1454,27 +1400,27 @@ class HSDatalog_v2:
         - Build a 'byte_chest' buffer of data+timestamps sliced to desired time window.
         - Delegate final reshape/scaling/timestamp interpolation to __process_datalog.
         """
-        log.debug("Data & Timestamp extraction algorithm STARTED...")
+        log.debug('Data & Timestamp extraction algorithm STARTED...')
 
         # get acquisition interface
-        interface = self.acq_info_model["interface"]
+        interface = self.acq_info_model['interface']
 
         # get component type
-        c_type = comp_status.get("c_type")
+        c_type = comp_status.get('c_type')
 
         data_protocol_size = self.get_data_protocol_size()
         data_packet_size = 0
         # data packet size (0:sd card, 1:usb, 2:ble, 3:serial)
         if interface == 0:
-            data_packet_size = comp_status["sd_dps"] - data_protocol_size
+            data_packet_size = comp_status['sd_dps'] - data_protocol_size
         elif interface == 1:
-            data_packet_size = comp_status["usb_dps"]
+            data_packet_size = comp_status['usb_dps']
         elif interface == 2:
-            data_packet_size = comp_status["ble_dps"]
+            data_packet_size = comp_status['ble_dps']
         elif interface == 3:
-            data_packet_size = comp_status["serial_dps"]
+            data_packet_size = comp_status['serial_dps']
         else:
-            log.error(f"Unknown interface: {interface}. check your device_config.json file")
+            log.error(f'Unknown interface: {interface}. check your device_config.json file')
             raise
 
         # get dat file path and size (obtained from "sensor_name + sub_sensor_type")
@@ -1484,36 +1430,35 @@ class HSDatalog_v2:
         cmplt_pkt_size = data_packet_size + data_protocol_size
         nof_data_packet = file_size // cmplt_pkt_size  # "//" math.floor equivalent #CEIL
 
-        raw_data_array = np.array([], dtype="uint8")
+        raw_data_array = np.array([], dtype='uint8')
 
         if c_type == ComponentTypeEnum.ALGORITHM.value:
-            algo_type = comp_status.get("algorithm_type")
+            algo_type = comp_status.get('algorithm_type')
             if algo_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
                 # get FFT algo "dimensions" --> FFT Length
-                s_dim = comp_status.get("fft_length")
+                s_dim = comp_status.get('fft_length')
             else:
-                s_dim = comp_status.get("dim")
+                s_dim = comp_status.get('dim')
         else:
             # get sensor dimensions
-            s_dim = comp_status.get("dim", 1)
+            s_dim = comp_status.get('dim', 1)
 
         # get Data type byte length
-        s_data_type_len = TypeConversion.check_type_length(comp_status["data_type"])
+        s_data_type_len = TypeConversion.check_type_length(comp_status['data_type'])
 
         # get samples per ts
-        spts = comp_status.get("samples_per_ts", {})
+        spts = comp_status.get('samples_per_ts', {})
         if isinstance(spts, int):
             s_samples_per_ts = spts
         else:
             if c_type == ComponentTypeEnum.ACTUATOR.value:
-                s_samples_per_ts = spts.get("val", 1)
+                s_samples_per_ts = spts.get('val', 1)
             else:
-                s_samples_per_ts = spts.get("val", 0)
+                s_samples_per_ts = spts.get('val', 0)
 
         if c_type == ComponentTypeEnum.SENSOR.value or (
-            c_type == ComponentTypeEnum.ACTUATOR.value and "odr" in comp_status
+            c_type == ComponentTypeEnum.ACTUATOR.value and 'odr' in comp_status
         ):
-
             if s_samples_per_ts != 0:
                 dataframe_byte_size = s_samples_per_ts * s_dim * s_data_type_len
                 timestamp_byte_size = 8
@@ -1522,9 +1467,9 @@ class HSDatalog_v2:
                 timestamp_byte_size = 0
 
             # 1 sec --> ODR samples --> ODR * dim * data_type Bytes
-            odr = comp_status.get("measodr")
+            odr = comp_status.get('measodr')
             if odr is None or odr == 0:
-                odr = comp_status.get("odr", 1)
+                odr = comp_status.get('odr', 1)
 
             tot_counters_bytes = nof_data_packet * data_protocol_size
             tot_file_data_and_times_bytes = file_size - tot_counters_bytes
@@ -1549,15 +1494,13 @@ class HSDatalog_v2:
                 # read_start_bytes = sample_start * dataframe_byte_size
                 # read_end_bytes = sample_end * dataframe_byte_size
 
-            start_data_and_times_bytes_idx = (
-                start_data_bytes_idx + nof_timestamps_in_start * timestamp_byte_size
-            )
+            start_data_and_times_bytes_idx = start_data_bytes_idx + nof_timestamps_in_start * timestamp_byte_size
             nof_counter_in_start = math.floor(start_data_and_times_bytes_idx / data_packet_size)
             start_idx = start_data_and_times_bytes_idx + nof_counter_in_start * data_protocol_size
 
             acq_info = self.get_acquisition_info()
-            acq_start_time = parser.isoparse(acq_info["start_time"])
-            acq_end_time = parser.isoparse(acq_info["end_time"])
+            acq_start_time = parser.isoparse(acq_info['start_time'])
+            acq_end_time = parser.isoparse(acq_info['end_time'])
             acquisition_duration = (acq_end_time - acq_start_time).total_seconds()
 
             # Last available timestamp
@@ -1594,12 +1537,12 @@ class HSDatalog_v2:
                 # Preallocate byte_chest/raw_data_array with estimated sizes to
                 # avoid repeated reallocation
                 estimated_size = (nof_data_packet + 1) * (cmplt_pkt_size - data_protocol_size)
-                byte_chest = np.empty(estimated_size, dtype="uint8")
-                raw_data_array = np.empty(estimated_size, dtype="uint8")
+                byte_chest = np.empty(estimated_size, dtype='uint8')
+                raw_data_array = np.empty(estimated_size, dtype='uint8')
 
-                last_index = comp_status.get("last_index", 0)
-                missing_bytes = comp_status.get("missing_bytes", 0)
-                saved_bytes = comp_status.get("saved_bytes", 0)
+                last_index = comp_status.get('last_index', 0)
+                missing_bytes = comp_status.get('missing_bytes', 0)
+                saved_bytes = comp_status.get('saved_bytes', 0)
 
                 if last_index == 0 and start_idx != 0:
                     data_and_ts = nof_prev_timestamps * (dataframe_byte_size + timestamp_byte_size)
@@ -1607,12 +1550,10 @@ class HSDatalog_v2:
                     packet_bytes = (nof_counters * data_protocol_size) + (
                         nof_prev_timestamps * (dataframe_byte_size + timestamp_byte_size)
                     )
-                    missing_bytes = (
-                        math.ceil(packet_bytes / cmplt_pkt_size) * cmplt_pkt_size - packet_bytes
-                    )
-                    log.debug(f"User customized time boudaries: {start_time}, {end_time}")
-                    log.debug(f"- packet_bytes: {packet_bytes}")
-                    log.debug(f"- missing_bytes: {missing_bytes}")
+                    missing_bytes = math.ceil(packet_bytes / cmplt_pkt_size) * cmplt_pkt_size - packet_bytes
+                    log.debug(f'User customized time boudaries: {start_time}, {end_time}')
+                    log.debug(f'- packet_bytes: {packet_bytes}')
+                    log.debug(f'- missing_bytes: {missing_bytes}')
                     last_index = packet_bytes
 
                 byte_chest_index = 0
@@ -1623,15 +1564,15 @@ class HSDatalog_v2:
                 skip_counter_check = False
                 prev_timestamp = None
 
-                with open(file_path, "rb") as f:
+                with open(file_path, 'rb') as f:
                     for n in range(nof_data_packet + 1):
                         file_index = last_index + (n * cmplt_pkt_size)
-                        log.debug(f"missing_bytes: {missing_bytes}")
-                        log.debug(f"file_index: {file_index}")
+                        log.debug(f'missing_bytes: {missing_bytes}')
+                        log.debug(f'file_index: {file_index}')
                         if file_index >= file_size:
-                            comp_status["missing_bytes"] = byte_chest_index
-                            comp_status["saved_bytes"] = raw_data_array_index
-                            comp_status["last_index"] = file_index
+                            comp_status['missing_bytes'] = byte_chest_index
+                            comp_status['saved_bytes'] = raw_data_array_index
+                            comp_status['last_index'] = file_index
                             # EOF - Not enough (cmplt_pkt_size) data to read!
                             # Extraction algorithm ends here
                             break
@@ -1639,8 +1580,8 @@ class HSDatalog_v2:
                         if last_index != 0:
                             if saved_bytes != 0 and saved_bytes <= missing_bytes:
                                 raw_data = f.read(missing_bytes)
-                                log.debug(f"Bytes read from file: {missing_bytes}")
-                                comp_status["is_same_dps"] = True
+                                log.debug(f'Bytes read from file: {missing_bytes}')
+                                comp_status['is_same_dps'] = True
                                 if len(raw_data) < missing_bytes:
                                     return [], None
                                 data_bytes = raw_data[:missing_bytes]
@@ -1648,22 +1589,17 @@ class HSDatalog_v2:
                                 skip_counter_check = True
                             else:
                                 raw_data = f.read(missing_bytes + cmplt_pkt_size)
-                                comp_status["is_same_dps"] = False
-                                log.debug(f"Bytes read from file: {missing_bytes + cmplt_pkt_size}")
+                                comp_status['is_same_dps'] = False
+                                log.debug(f'Bytes read from file: {missing_bytes + cmplt_pkt_size}')
                                 if len(raw_data) < missing_bytes + cmplt_pkt_size:
                                     return [], None
-                                data_bytes = (
-                                    raw_data[:missing_bytes]
-                                    + raw_data[missing_bytes + data_protocol_size :]
-                                )
-                                counter_bytes = raw_data[
-                                    missing_bytes : missing_bytes + data_protocol_size
-                                ]
+                                data_bytes = raw_data[:missing_bytes] + raw_data[missing_bytes + data_protocol_size :]
+                                counter_bytes = raw_data[missing_bytes : missing_bytes + data_protocol_size]
                             last_index += missing_bytes
-                            comp_status["missing_bytes"] = missing_bytes = 0
+                            comp_status['missing_bytes'] = missing_bytes = 0
                         else:
                             raw_data = f.read(cmplt_pkt_size)
-                            log.debug(f"Bytes read from file: {cmplt_pkt_size}")
+                            log.debug(f'Bytes read from file: {cmplt_pkt_size}')
                             if (len(raw_data) + byte_chest_index) < cmplt_pkt_size:
                                 return [], None
 
@@ -1671,40 +1607,37 @@ class HSDatalog_v2:
                             counter_bytes = raw_data[:data_protocol_size]
 
                         if not skip_counter_check:
-                            counter = struct.unpack("<I", counter_bytes)[0]
-                            log.debug(f"Extracted counter: {counter}")
-                            log.debug(f"data_byte_counter: {data_byte_counter}")
-                            data_byte_counter = comp_status.get("prev_data_byte_counter")
+                            counter = struct.unpack('<I', counter_bytes)[0]
+                            log.debug(f'Extracted counter: {counter}')
+                            log.debug(f'data_byte_counter: {data_byte_counter}')
+                            data_byte_counter = comp_status.get('prev_data_byte_counter')
                             if data_byte_counter is None:
-                                comp_status["prev_data_byte_counter"] = counter
+                                comp_status['prev_data_byte_counter'] = counter
                             else:
                                 if (counter - data_byte_counter) != data_packet_size:
-                                    is_first_chunk = comp_status.get("is_first_chunk", True)
+                                    is_first_chunk = comp_status.get('is_first_chunk', True)
                                     if is_first_chunk and n == 0 and data_byte_counter == 0:
                                         # Drop the first complete packet (data_packet_size)
                                         # and continue with data extraction and validation
                                         log.warning(
                                             (
-                                                "Counter mismatch at the beginning of the file: "
-                                                f"{counter} != "
-                                                f"{data_byte_counter + data_packet_size}"
+                                                'Counter mismatch at the beginning of the file: '
+                                                f'{counter} != '
+                                                f'{data_byte_counter + data_packet_size}'
                                             )
                                         )
                                         log.warning(
-                                            (
-                                                "Skipping the first packet and "
-                                                "continuing with the data extraction"
-                                            )
+                                            ('Skipping the first packet and continuing with the data extraction')
                                         )
                                         continue
                                     else:
                                         raise DataCorruptedException(file_path)
-                                comp_status["prev_data_byte_counter"] = counter
+                                comp_status['prev_data_byte_counter'] = counter
 
                         # Directly copy data into preallocated array
                         data_bytes_length = len(data_bytes)
-                        byte_chest[byte_chest_index : byte_chest_index + data_bytes_length] = (
-                            np.frombuffer(data_bytes, dtype="uint8")
+                        byte_chest[byte_chest_index : byte_chest_index + data_bytes_length] = np.frombuffer(
+                            data_bytes, dtype='uint8'
                         )
                         byte_chest_index += data_bytes_length
 
@@ -1713,26 +1646,20 @@ class HSDatalog_v2:
                             read_end_bytes = sample_end * dataframe_byte_size
                             if byte_chest_index >= read_end_bytes - read_start_bytes:
                                 extracted_data_length = read_end_bytes - read_start_bytes
-                                raw_data_array[:extracted_data_length] = byte_chest[
-                                    :extracted_data_length
-                                ]
+                                raw_data_array[:extracted_data_length] = byte_chest[:extracted_data_length]
                                 raw_data_array_index += extracted_data_length
                                 end_time_flag = True
 
-                                is_same_data_packet = comp_status.get("is_same_dps")
+                                is_same_data_packet = comp_status.get('is_same_dps')
                                 if is_same_data_packet:
                                     bytes_processed = last_index
-                                    comp_status["is_same_dps"] = False
+                                    comp_status['is_same_dps'] = False
                                 else:
                                     bytes_processed = last_index + (n + 1) * cmplt_pkt_size
 
-                                comp_status["missing_bytes"] = (
-                                    byte_chest_index - extracted_data_length
-                                )
-                                comp_status["saved_bytes"] = raw_data_array_index
-                                comp_status["last_index"] = (
-                                    bytes_processed - comp_status["missing_bytes"]
-                                )
+                                comp_status['missing_bytes'] = byte_chest_index - extracted_data_length
+                                comp_status['saved_bytes'] = raw_data_array_index
+                                comp_status['last_index'] = bytes_processed - comp_status['missing_bytes']
                                 byte_chest_index -= extracted_data_length
                                 break
                         else:
@@ -1741,32 +1668,24 @@ class HSDatalog_v2:
                                 extracted_timestamp_bytes = byte_chest[
                                     dataframe_byte_size : dataframe_byte_size + timestamp_byte_size
                                 ]
-                                extracted_timestamp = struct.unpack("d", extracted_timestamp_bytes)[
-                                    0
-                                ]
-                                log.debug(f"start_time: {start_time}")
-                                log.debug(f"extracted_timestamp: {extracted_timestamp}")
-                                log.debug(f"end_time: {end_time}")
+                                extracted_timestamp = struct.unpack('d', extracted_timestamp_bytes)[0]
+                                log.debug(f'start_time: {start_time}')
+                                log.debug(f'extracted_timestamp: {extracted_timestamp}')
+                                log.debug(f'end_time: {end_time}')
                                 if extracted_timestamp > start_time:
-
-                                    extracted_data_length = (
-                                        dataframe_byte_size + timestamp_byte_size
-                                    )
+                                    extracted_data_length = dataframe_byte_size + timestamp_byte_size
                                     raw_data_array[
-                                        raw_data_array_index : raw_data_array_index
-                                        + extracted_data_length
+                                        raw_data_array_index : raw_data_array_index + extracted_data_length
                                     ] = byte_chest[:extracted_data_length]
                                     raw_data_array_index += extracted_data_length
 
                                     if end_time != -1 and extracted_timestamp >= end_time:
-                                        if prev_timestamp is None and comp_status.get(
-                                            "is_first_chunk", False
-                                        ):
+                                        if prev_timestamp is None and comp_status.get('is_first_chunk', False):
                                             prev_timestamp = extracted_timestamp
-                                            log.debug(f"prev_timestamp: {prev_timestamp}")
+                                            log.debug(f'prev_timestamp: {prev_timestamp}')
                                             if prev_timestamp > start_time:
                                                 if last_index == 0:
-                                                    prev_timestamp = comp_status.get("ioffset", 0)
+                                                    prev_timestamp = comp_status.get('ioffset', 0)
                                                 else:
                                                     end_time_flag = True
                                                     break
@@ -1774,63 +1693,52 @@ class HSDatalog_v2:
                                         end_time = extracted_timestamp
                                         end_time_flag = True
 
-                                        is_same_data_packet = comp_status.get("is_same_dps")
+                                        is_same_data_packet = comp_status.get('is_same_dps')
                                         if is_same_data_packet:
                                             bytes_processed = last_index
-                                            comp_status["is_same_dps"] = False
+                                            comp_status['is_same_dps'] = False
                                         else:
                                             bytes_processed = last_index + (n + 1) * cmplt_pkt_size
 
-                                        comp_status["missing_bytes"] = (
-                                            byte_chest_index - extracted_data_length
-                                        )
-                                        comp_status["saved_bytes"] = raw_data_array_index
-                                        comp_status["last_index"] = (
-                                            bytes_processed - comp_status["missing_bytes"]
-                                        )
+                                        comp_status['missing_bytes'] = byte_chest_index - extracted_data_length
+                                        comp_status['saved_bytes'] = raw_data_array_index
+                                        comp_status['last_index'] = bytes_processed - comp_status['missing_bytes']
                                         break
                                     else:
-                                        if prev_timestamp is None and comp_status.get(
-                                            "is_first_chunk", False
-                                        ):
+                                        if prev_timestamp is None and comp_status.get('is_first_chunk', False):
                                             prev_timestamp = extracted_timestamp
-                                            log.debug(f"prev_timestamp: {prev_timestamp}")
+                                            log.debug(f'prev_timestamp: {prev_timestamp}')
                                             if prev_timestamp > start_time:
                                                 if last_index == 0:
-                                                    prev_timestamp = comp_status.get("ioffset", 0)
+                                                    prev_timestamp = comp_status.get('ioffset', 0)
                                                 else:
                                                     end_time_flag = True
-                                                    comp_status.pop("prev_data_byte_counter", None)
+                                                    comp_status.pop('prev_data_byte_counter', None)
                                                     break
 
                                     byte_chest = byte_chest[extracted_data_length:]
                                     byte_chest_index -= extracted_data_length
 
                                 else:
-                                    is_first_chunk = comp_status.get("is_first_chunk", False)
+                                    is_first_chunk = comp_status.get('is_first_chunk', False)
                                     if is_first_chunk:
                                         prev_timestamp = extracted_timestamp
-                                        log.debug(f"prev_timestamp: {prev_timestamp}")
+                                        log.debug(f'prev_timestamp: {prev_timestamp}')
 
-                                    byte_chest = byte_chest[
-                                        dataframe_byte_size + timestamp_byte_size :
-                                    ]
+                                    byte_chest = byte_chest[dataframe_byte_size + timestamp_byte_size :]
                                     byte_chest_index -= dataframe_byte_size + timestamp_byte_size
                                     break
 
                             if (
-                                "last_index" not in comp_status
+                                'last_index' not in comp_status
                                 and extracted_timestamp is not None
-                                and (last_timestamp - extracted_timestamp)
-                                < (s_samples_per_ts / odr)
+                                and (last_timestamp - extracted_timestamp) < (s_samples_per_ts / odr)
                             ):
                                 end_time_flag = True
                                 bytes_processed = last_index + (n + 1) * cmplt_pkt_size
-                                comp_status["missing_bytes"] = byte_chest_index
-                                comp_status["saved_bytes"] = raw_data_array_index
-                                comp_status["last_index"] = (
-                                    bytes_processed - comp_status["missing_bytes"]
-                                )
+                                comp_status['missing_bytes'] = byte_chest_index
+                                comp_status['saved_bytes'] = raw_data_array_index
+                                comp_status['last_index'] = bytes_processed - comp_status['missing_bytes']
                                 break
 
                             if (
@@ -1838,14 +1746,12 @@ class HSDatalog_v2:
                                 and extracted_timestamp is not None
                                 and extracted_timestamp < end_time
                                 and byte_chest_index != 0
-                                and comp_status["missing_bytes"] != 0
+                                and comp_status['missing_bytes'] != 0
                             ):
                                 end_time_flag = True
-                                comp_status["missing_bytes"] = byte_chest_index
-                                comp_status["saved_bytes"] = raw_data_array_index
-                                comp_status["last_index"] = (
-                                    last_index - comp_status["missing_bytes"]
-                                )
+                                comp_status['missing_bytes'] = byte_chest_index
+                                comp_status['saved_bytes'] = raw_data_array_index
+                                comp_status['last_index'] = last_index - comp_status['missing_bytes']
                                 break
 
                         if end_time_flag:
@@ -1857,18 +1763,14 @@ class HSDatalog_v2:
                 return raw_data_array, prev_timestamp
 
             nof_prev_timestamps = max(0, nof_timestamps_in_start - 2)
-            raw_data_array, prev_timestamp = __extract_data(
-                start_time, end_time, nof_prev_timestamps
-            )
+            raw_data_array, prev_timestamp = __extract_data(start_time, end_time, nof_prev_timestamps)
 
             if nof_prev_timestamps != 0:
                 while prev_timestamp is not None and prev_timestamp > start_time:
                     nof_prev_timestamps -= 1
-                    raw_data_array, prev_timestamp = __extract_data(
-                        start_time, end_time, nof_prev_timestamps
-                    )
+                    raw_data_array, prev_timestamp = __extract_data(start_time, end_time, nof_prev_timestamps)
 
-            log.debug("Data & Timestamp extraction algorithm COMPLETED!")
+            log.debug('Data & Timestamp extraction algorithm COMPLETED!')
             data, timestamp = self.__process_datalog(
                 comp_name,
                 comp_status,
@@ -1880,37 +1782,34 @@ class HSDatalog_v2:
                 prev_timestamp,
             )
 
-            if "last_index" not in comp_status:
+            if 'last_index' not in comp_status:
                 bytes_processed = last_index + (nof_data_packet + 1) * cmplt_pkt_size
-                comp_status["missing_bytes"] = byte_chest_index
-                comp_status["saved_bytes"] = raw_data_array_index
-                comp_status["last_index"] = bytes_processed - comp_status["missing_bytes"]
+                comp_status['missing_bytes'] = byte_chest_index
+                comp_status['saved_bytes'] = raw_data_array_index
+                comp_status['last_index'] = bytes_processed - comp_status['missing_bytes']
 
             # DEBUG
-            log.debug(f"data Len: {len(data)}")
-            log.debug(f"Time Len: {len(timestamp)}")
+            log.debug(f'data Len: {len(data)}')
+            log.debug(f'Time Len: {len(timestamp)}')
             return data, timestamp
 
-        elif c_type == ComponentTypeEnum.ACTUATOR.value and "odr" not in comp_status:
+        elif c_type == ComponentTypeEnum.ACTUATOR.value and 'odr' not in comp_status:
             if comp_name == MC_SLOW_TELEMETRY_COMP_NAME or comp_name == MC_FAST_TELEMETRY_COMP_NAME:
                 if data_packet_size is not None:
-                    with open(file_path, "rb") as f:
+                    with open(file_path, 'rb') as f:
                         f_data = f.read()
                         if not f_data:
                             log.error(
-                                (
-                                    f'No data @ index: 0 for file "{file_path}" size: '
-                                    f"{os.stat(f.name).st_size}[bytes]"
-                                )
+                                (f'No data @ index: 0 for file "{file_path}" size: {os.stat(f.name).st_size}[bytes]')
                             )
                             raise NoDataAtIndexError(0, file_path, os.stat(f.name).st_size)
-                        raw_data = np.fromstring(f_data, dtype="uint8")
+                        raw_data = np.fromstring(f_data, dtype='uint8')
                         new_array = self.remove_4bytes_every_n_optimized(raw_data, cmplt_pkt_size)
 
                     # NOTE: The following value should be obtained from:
                     # -SLOW MC TELEMETRIES: "n_of_enabled_slow_telemetries * data_type (bytes_size)"
                     # -FAST MC TELEMETRIES: "dim * data_type (bytes_size)"
-                    data_packet_size = comp_status.get("usb_dps")
+                    data_packet_size = comp_status.get('usb_dps')
                     if data_packet_size is not None:
                         timestamp_byte_size = 8
                         dataframe_byte_size = data_packet_size - timestamp_byte_size
@@ -1925,31 +1824,26 @@ class HSDatalog_v2:
                     )
 
                     # DEBUG
-                    log.debug(f"data Len: {len(data)}")
-                    log.debug(f"Time Len: {len(timestamp)}")
+                    log.debug(f'data Len: {len(data)}')
+                    log.debug(f'Time Len: {len(timestamp)}')
                     return data, timestamp
                 else:
-                    log.error("Actuator type not supported")
+                    log.error('Actuator type not supported')
                     return None, None
 
         elif c_type == ComponentTypeEnum.ALGORITHM.value:
             if algo_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:  # "fft":
-                log.debug("FFT Algorithm! No batch")
+                log.debug('FFT Algorithm! No batch')
 
                 dataframe_byte_size = int(s_dim * s_data_type_len)
                 timestamp_byte_size = 0
 
-                with open(file_path, "rb") as f:
+                with open(file_path, 'rb') as f:
                     f_data = f.read()
                     if not f_data:
-                        log.error(
-                            (
-                                f'No data @ index: 0 for file "{file_path}" size: '
-                                f"{os.stat(f.name).st_size}[bytes]"
-                            )
-                        )
+                        log.error((f'No data @ index: 0 for file "{file_path}" size: {os.stat(f.name).st_size}[bytes]'))
                         raise NoDataAtIndexError(0, file_path, os.stat(f.name).st_size)
-                    raw_data = np.fromstring(f_data, dtype="uint8")
+                    raw_data = np.fromstring(f_data, dtype='uint8')
                     new_array = self.remove_4bytes_every_n_optimized(raw_data, cmplt_pkt_size)
 
                 data, timestamp = self.__process_datalog(
@@ -1963,16 +1857,14 @@ class HSDatalog_v2:
                 )
 
                 # DEBUG
-                log.debug(f"data Len: {len(data)}")
-                log.debug(f"Time Len: {len(timestamp)}")
+                log.debug(f'data Len: {len(data)}')
+                log.debug(f'Time Len: {len(timestamp)}')
                 return data, timestamp
             else:
-                log.error("Algorithm type not supported")
+                log.error('Algorithm type not supported')
                 return None, None
 
-    def get_data_and_timestamps(
-        self, sensor_name, sub_sensor_type, start_time=0, end_time=-1, raw_flag=False
-    ):
+    def get_data_and_timestamps(self, sensor_name, sub_sensor_type, start_time=0, end_time=-1, raw_flag=False):
         """
         Deprecated: Parse a sensor .dat file into data and timestamps.
 
@@ -1983,9 +1875,9 @@ class HSDatalog_v2:
         the entire .dat file at once, which may lead to high memory usage for large files.
         """
         warnings.warn(
-            "get_data_and_timestamps is deprecated. "
-            "Use get_data_and_timestamps_batch(comp_name, comp_status, start_time, "
-            "end_time, raw_flag) instead.",
+            'get_data_and_timestamps is deprecated. '
+            'Use get_data_and_timestamps_batch(comp_name, comp_status, start_time, '
+            'end_time, raw_flag) instead.',
             DeprecationWarning,
             stacklevel=2,
         )
@@ -1994,7 +1886,7 @@ class HSDatalog_v2:
         s_stat = self.__get_sensor_status(sensor_name)
 
         # get acquisition interface
-        interface = self.acq_info_model["interface"]
+        interface = self.acq_info_model['interface']
 
         # data protocol size:
         data_protocol_size = 4
@@ -2002,15 +1894,15 @@ class HSDatalog_v2:
         data_packet_size = 0
         # data packet size (0:sd card, 1:usb, 2:ble, 3:serial)
         if interface == 0:
-            data_packet_size = s_stat["sd_dps"] - data_protocol_size
+            data_packet_size = s_stat['sd_dps'] - data_protocol_size
         elif interface == 1:
-            data_packet_size = s_stat["usb_dps"]
+            data_packet_size = s_stat['usb_dps']
         elif interface == 2:
-            data_packet_size = s_stat["ble_dps"]
+            data_packet_size = s_stat['ble_dps']
         elif interface == 3:
-            data_packet_size = s_stat["serial_dps"]
+            data_packet_size = s_stat['serial_dps']
         else:
-            log.error(f"Unknown interface: {interface}. check your device_config.json file")
+            log.error(f'Unknown interface: {interface}. check your device_config.json file')
             raise
 
         # get dat file path and size (obtained from "sensor_name + sub_sensor_type")
@@ -2019,9 +1911,9 @@ class HSDatalog_v2:
 
         cmplt_pkt_size = data_packet_size + data_protocol_size
         nof_data_packet = file_size // cmplt_pkt_size  # "//" math.floor equivalent
-        checked_file_path = os.path.splitext(os.path.abspath(file_path))[0] + "_checked.dat"
+        checked_file_path = os.path.splitext(os.path.abspath(file_path))[0] + '_checked.dat'
 
-        with open(checked_file_path, "wb") as f, open(file_path, "rb") as rf:
+        with open(checked_file_path, 'wb') as f, open(file_path, 'rb') as rf:
             # cmplt_pkt_size = data_packet_size + data_protocol_size
             for n in range(nof_data_packet):
                 index = n * cmplt_pkt_size
@@ -2029,66 +1921,57 @@ class HSDatalog_v2:
                 rf_data = rf.read(cmplt_pkt_size)[4:]
                 if not rf_data:
                     log.error(
-                        (
-                            f'No data @ index: {index} for file "{file_path}" size: '
-                            f"{os.stat(f.name).st_size}[bytes]"
-                        )
+                        (f'No data @ index: {index} for file "{file_path}" size: {os.stat(f.name).st_size}[bytes]')
                     )
                     raise NoDataAtIndexError(index, file_path, os.stat(f.name).st_size)
-                f.write(np.frombuffer(rf_data, dtype="uint8"))
+                f.write(np.frombuffer(rf_data, dtype='uint8'))
 
         # get checked dat file path and size (obtained from "sensor_name + sub_sensor_type")
         # reusing the same variables
         file_path = self.__get_checked_sensor_file_path(sensor_name)
         file_size = os.path.getsize(file_path)
 
-        c_type = s_stat.get("c_type")
+        c_type = s_stat.get('c_type')
 
         if c_type == ComponentTypeEnum.ALGORITHM.value:
-            algo_type = s_stat.get("algorithm_type")
+            algo_type = s_stat.get('algorithm_type')
             if algo_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
                 # get FFT algo "dimensions" --> FFT Length
-                s_dim = s_stat.get("fft_length")
+                s_dim = s_stat.get('fft_length')
             else:
-                s_dim = s_stat.get("dim")
+                s_dim = s_stat.get('dim')
         else:
             # get sensor dimensions
-            s_dim = s_stat.get("dim", 1)
+            s_dim = s_stat.get('dim', 1)
 
         # get Data type byte length
-        s_data_type_len = TypeConversion.check_type_length(s_stat["data_type"])
+        s_data_type_len = TypeConversion.check_type_length(s_stat['data_type'])
 
         # get samples per ts
-        spts = s_stat.get("samples_per_ts", {})
+        spts = s_stat.get('samples_per_ts', {})
         if isinstance(spts, int):
             s_samples_per_ts = spts
         else:
-            s_samples_per_ts = spts.get("val", 0)
+            s_samples_per_ts = spts.get('val', 0)
 
         if c_type == ComponentTypeEnum.SENSOR.value:
             # NOTE sample_end = N/s = 26667 in 1 sec, 266670 in 10 sec
             # --> 26667*10 in 1*10 sec --> ODR*end_time (sec) = sample_end
             # NOTE sample_start = N/s = 104 in 1 sec, 1040 in 10 sec
             # --> 104*10 in 1*10 sec --> ODR*start_time (sec) = sample_start
-            s_category = s_stat.get("sensor_category")
-            if (
-                s_category is not None
-                and s_category == SensorCategoryEnum.ISENSOR_CLASS_LIGHT.value
-            ):
+            s_category = s_stat.get('sensor_category')
+            if s_category is not None and s_category == SensorCategoryEnum.ISENSOR_CLASS_LIGHT.value:
                 odr = (
-                    1 / (s_stat.get("intermeasurement_time") / 1000)
-                    if s_stat.get("intermeasurement_time") > s_stat.get("exposure_time") / 1000 + 6
-                    else (1 / ((s_stat.get("exposure_time") / 1000 + 6) / 1000))
+                    1 / (s_stat.get('intermeasurement_time') / 1000)
+                    if s_stat.get('intermeasurement_time') > s_stat.get('exposure_time') / 1000 + 6
+                    else (1 / ((s_stat.get('exposure_time') / 1000 + 6) / 1000))
                 )
-            elif (
-                s_category is not None
-                and s_category == SensorCategoryEnum.ISENSOR_CLASS_POWERMETER.value
-            ):
-                odr = 1 / (s_stat.get("adc_conversion_time") / 1000000)
+            elif s_category is not None and s_category == SensorCategoryEnum.ISENSOR_CLASS_POWERMETER.value:
+                odr = 1 / (s_stat.get('adc_conversion_time') / 1000000)
             else:
-                odr = s_stat.get("measodr")
+                odr = s_stat.get('measodr')
                 if odr is None or odr == 0:
-                    odr = s_stat.get("odr", 1)
+                    odr = s_stat.get('odr', 1)
             sample_end = int(odr * end_time) if end_time != -1 else -1
             total_samples = file_size // (s_data_type_len * s_dim)
             if sample_end > total_samples:
@@ -2117,17 +2000,14 @@ class HSDatalog_v2:
                     timestamp_byte_size = 8
 
                     if sample_end == -1:
-                        n_of_blocks_in_file = file_size // (
-                            timestamp_byte_size + dataframe_byte_size
-                        )
+                        n_of_blocks_in_file = file_size // (timestamp_byte_size + dataframe_byte_size)
                         sample_end = n_of_blocks_in_file * s_samples_per_ts
 
                     blocks_before_ss = sample_start // s_samples_per_ts
                     blocks_before_se = sample_end // s_samples_per_ts
 
                     read_start_bytes = (
-                        (blocks_before_ss * dataframe_byte_size)
-                        + ((blocks_before_ss - 1) * timestamp_byte_size)
+                        (blocks_before_ss * dataframe_byte_size) + ((blocks_before_ss - 1) * timestamp_byte_size)
                         if blocks_before_ss > 0
                         else 0
                     )
@@ -2135,30 +2015,24 @@ class HSDatalog_v2:
                         (blocks_before_se + 1) * timestamp_byte_size
                     )
 
-                with open(file_path, "rb") as f:
+                with open(file_path, 'rb') as f:
                     f.seek(read_start_bytes)
                     raw_data = f.read(read_end_bytes - read_start_bytes)
                     if len(raw_data) == 0:
                         log.error(
                             (
                                 f'No data @ index: {read_start_bytes} for file "{file_size}" size: '
-                                f"{os.stat(f.name).st_size}[bytes]"
+                                f'{os.stat(f.name).st_size}[bytes]'
                             )
                         )
-                        raise NoDataAtIndexError(
-                            read_start_bytes, file_path, os.stat(f.name).st_size
-                        )
+                        raise NoDataAtIndexError(read_start_bytes, file_path, os.stat(f.name).st_size)
 
-                raw_data = np.fromstring(raw_data, dtype="uint8")
+                raw_data = np.fromstring(raw_data, dtype='uint8')
 
                 # if the start_sample isn't in the first block (pre_t_bytes_id != 0)
                 if read_start_bytes != 0:
                     first_timestamp = raw_data[:timestamp_byte_size] if s_samples_per_ts != 0 else 0
-                    s_stat["ioffset"] = (
-                        np.frombuffer(first_timestamp, dtype="double")
-                        if s_samples_per_ts != 0
-                        else 0
-                    )
+                    s_stat['ioffset'] = np.frombuffer(first_timestamp, dtype='double') if s_samples_per_ts != 0 else 0
                     # remove the first timestamp
                     raw_data = raw_data[timestamp_byte_size:]
 
@@ -2173,40 +2047,37 @@ class HSDatalog_v2:
                 )
 
                 # DEBUG
-                log.debug(f"data Len: {len(data)}")
-                log.debug(f"Time Len: {len(timestamp)}")
+                log.debug(f'data Len: {len(data)}')
+                log.debug(f'Time Len: {len(timestamp)}')
 
                 os.remove(file_path)
 
                 return data, timestamp
 
             except MemoryError:
-                log.error(f"Memory Error occoured! You should batch process your {file_path} file")
+                log.error(f'Memory Error occoured! You should batch process your {file_path} file')
                 os.remove(file_path)
                 raise
             except OverflowError:
-                log.error(f"Memory Error occoured! You should batch process your {file_path} file")
+                log.error(f'Memory Error occoured! You should batch process your {file_path} file')
                 os.remove(file_path)
                 raise
 
         elif c_type == ComponentTypeEnum.ALGORITHM.value:
             if algo_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
-                log.info("FFT Algorithm!")
+                log.info('FFT Algorithm!')
 
                 dataframe_byte_size = int(s_dim * s_data_type_len)
                 timestamp_byte_size = 0
 
-                with open(file_path, "rb") as f:
+                with open(file_path, 'rb') as f:
                     f_data = f.read()
                     if not f_data:
                         log.error(
-                            (
-                                f'No data @ index: {0} for file "{file_path}" size: '
-                                f"{os.stat(f.name).st_size}[bytes]"
-                            )
+                            (f'No data @ index: {0} for file "{file_path}" size: {os.stat(f.name).st_size}[bytes]')
                         )
                         raise NoDataAtIndexError(0, file_path, os.stat(f.name).st_size)
-                    raw_data = np.fromstring(f_data, dtype="uint8")
+                    raw_data = np.fromstring(f_data, dtype='uint8')
 
                 data, timestamp = self.__process_datalog(
                     sensor_name,
@@ -2218,11 +2089,11 @@ class HSDatalog_v2:
                 )
 
                 # DEBUG
-                log.debug(f"data Len: {len(data)}")
-                log.debug(f"Time Len: {len(timestamp)}")
+                log.debug(f'data Len: {len(data)}')
+                log.debug(f'Time Len: {len(timestamp)}')
                 os.remove(file_path)
                 return data, timestamp
-            log.error("Algorithm type not supported")
+            log.error('Algorithm type not supported')
             os.remove(file_path)
             return None, None
 
@@ -2232,21 +2103,16 @@ class HSDatalog_v2:
                     timestamp_byte_size = 8
                     dataframe_byte_size = data_packet_size - timestamp_byte_size
                     n_of_samples = int(file_size / dataframe_byte_size)
-                    with open(file_path, "rb") as f:
+                    with open(file_path, 'rb') as f:
                         f_data = f.read()
                         if not f_data:
                             log.error(
-                                (
-                                    f'No data @ index: {0} for file "{file_path}" size: '
-                                    f"{os.stat(f.name).st_size}[bytes]"
-                                )
+                                (f'No data @ index: {0} for file "{file_path}" size: {os.stat(f.name).st_size}[bytes]')
                             )
                             raise NoDataAtIndexError(0, file_path, os.stat(f.name).st_size)
-                        raw_data = np.fromstring(f_data, dtype="uint8")
+                        raw_data = np.fromstring(f_data, dtype='uint8')
                     if n_of_samples >= 1:
-                        first_timestamp = raw_data[
-                            dataframe_byte_size : dataframe_byte_size + timestamp_byte_size
-                        ]
+                        first_timestamp = raw_data[dataframe_byte_size : dataframe_byte_size + timestamp_byte_size]
 
                     data, timestamp = self.__process_datalog(
                         sensor_name,
@@ -2257,35 +2123,37 @@ class HSDatalog_v2:
                         raw_flag=raw_flag,
                     )
                     # DEBUG
-                    log.debug(f"data Len: {data}")
-                    log.debug(f"Time Len: {timestamp}")
+                    log.debug(f'data Len: {data}')
+                    log.debug(f'Time Len: {timestamp}')
                     os.remove(file_path)
                     return data, timestamp
-                log.error("Actuator type not supported")
+                log.error('Actuator type not supported')
                 os.remove(file_path)
                 return None, None
 
     def get_mlc_ispu_output_column_names(self, comp_name):
         """Get ISPU output column names from the ISPU output format."""
-        if "_ispu" in comp_name or "_mlc" in comp_name:
+        if '_ispu' in comp_name or '_mlc' in comp_name:
             if comp_name in list(self.mlc_ispu_output_formats.keys()):
-                outputs = self.mlc_ispu_output_formats[comp_name].get("outputs")
-                core = self.mlc_ispu_output_formats[comp_name].get("core")
+                outputs = self.mlc_ispu_output_formats[comp_name].get('outputs')
+                core = self.mlc_ispu_output_formats[comp_name].get('core')
                 if outputs:
-                    return [o["name"] for o in outputs]
+                    return [o['name'] for o in outputs]
                 else:
-                    if core == "MLC":
-                        return [f"MLC_output_{i}" for i in range(8)]
-                    elif core == "ISPU":
+                    if core == 'MLC':
+                        return [f'MLC_output_{i}' for i in range(8)]
+                    elif core == 'ISPU':
                         log.error(f"ISPU output format for {comp_name} is missing 'outputs' key")
                         return None
             else:
-                if "_mlc" in comp_name:
-                    return [f"MLC_output_{i}" for i in range(8)]
-                log.error(f"Component name {comp_name} not found in MLC/ISPU output formats read from the acquisition folder")
+                if '_mlc' in comp_name:
+                    return [f'MLC_output_{i}' for i in range(8)]
+                log.error(
+                    f'Component name {comp_name} not found in MLC/ISPU output formats read from the acquisition folder'
+                )
                 return None
         else:
-            log.error(f"Component name {comp_name} does not indicate an ISPU or MLC component")
+            log.error(f'Component name {comp_name} does not indicate an ISPU or MLC component')
             return None
 
     # def get_ispu_output_types(self):
@@ -2297,25 +2165,27 @@ class HSDatalog_v2:
 
     def get_mlc_ispu_output_types(self, comp_name):
         """Get ISPU output types from the ISPU output format."""
-        if "_ispu" in comp_name or "_mlc" in comp_name:
+        if '_ispu' in comp_name or '_mlc' in comp_name:
             if comp_name in list(self.mlc_ispu_output_formats.keys()):
-                outputs = self.mlc_ispu_output_formats[comp_name].get("outputs")
-                core = self.mlc_ispu_output_formats[comp_name].get("core")
+                outputs = self.mlc_ispu_output_formats[comp_name].get('outputs')
+                core = self.mlc_ispu_output_formats[comp_name].get('core')
                 if outputs:
-                    return [TypeConversion.check_type(o["type"]) for o in outputs]
+                    return [TypeConversion.check_type(o['type']) for o in outputs]
                 else:
-                    if core == "MLC":
-                        return [TypeConversion.check_type("int8")] * 8
-                    elif core == "ISPU":
+                    if core == 'MLC':
+                        return [TypeConversion.check_type('int8')] * 8
+                    elif core == 'ISPU':
                         log.error(f"ISPU output format for {comp_name} is missing 'outputs' key")
                         return None
             else:
-                if "_mlc" in comp_name:
-                    return [TypeConversion.check_type("int8")] * 8
-                log.error(f"Component name {comp_name} not found in MLC/ISPU output formats read from the acquisition folder")
+                if '_mlc' in comp_name:
+                    return [TypeConversion.check_type('int8')] * 8
+                log.error(
+                    f'Component name {comp_name} not found in MLC/ISPU output formats read from the acquisition folder'
+                )
                 return None
         else:
-            log.error(f"Component name {comp_name} does not indicate an ISPU or MLC component")
+            log.error(f'Component name {comp_name} does not indicate an ISPU or MLC component')
             return None
 
     def __get_mems_columns_names(self, ss_stat, sensor_name, s_type, num_axes):
@@ -2332,13 +2202,13 @@ class HSDatalog_v2:
         Raises:
         - NSensorAxesError: If the number of sensor axes is invalid.
         """
-        if not (s_type == "mlc" or s_type == "stredl" or s_type == "ispu"):
-            cc = ["x", "y", "z"] if num_axes == 3 else ["x", "y"] if num_axes == 2 else []
-            col_prefix = s_type[0].upper() + "_" if cc else ""
-            col_postfix = ""
-            if "unit" in ss_stat:
-                unit = ss_stat["unit"]
-                col_postfix = " [" + UnitMap().unit_dict.get(unit, unit) + "]"
+        if not (s_type == 'mlc' or s_type == 'stredl' or s_type == 'ispu'):
+            cc = ['x', 'y', 'z'] if num_axes == 3 else ['x', 'y'] if num_axes == 2 else []
+            col_prefix = s_type[0].upper() + '_' if cc else ''
+            col_postfix = ''
+            if 'unit' in ss_stat:
+                unit = ss_stat['unit']
+                col_postfix = ' [' + UnitMap().unit_dict.get(unit, unit) + ']'
             c = [col_prefix + s + col_postfix for s in cc] if cc else [s_type.upper() + col_postfix]
         else:
             c = self.get_mlc_ispu_output_column_names(comp_name=sensor_name)
@@ -2379,63 +2249,53 @@ class HSDatalog_v2:
         Returns:
         - list: List of axis labels.
         """
-        s_type = ""
-        c_type = ss_stat.get("c_type")
+        s_type = ''
+        c_type = ss_stat.get('c_type')
         if c_type == ComponentTypeEnum.SENSOR.value:
-            num_axes = int(ss_stat.get("dim", 1))
+            num_axes = int(ss_stat.get('dim', 1))
             _, s_type = FileManager.decode_file_name(sensor_name)
-            s_category = ss_stat.get("sensor_category")
+            s_category = ss_stat.get('sensor_category')
             if s_category is not None:
                 al = []
                 if s_category == SensorCategoryEnum.ISENSOR_CLASS_LIGHT.value:
-                    al = ["Red", "Visible", "Blue", "Green", "IR", "Clear"]
+                    al = ['Red', 'Visible', 'Blue', 'Green', 'IR', 'Clear']
                 elif s_category == SensorCategoryEnum.ISENSOR_CLASS_PRESENCE.value:
                     al = [
-                        "Tambient (raw)",
-                        "Tobject (raw)",
-                        "Tobject (emb_comp)",
-                        "Tpresence",
-                        "Presence flag",
-                        "Tmotion",
-                        "Motion flag",
-                        "Tobject (sw_comp)",
-                        "Tobject_change (sw_comp)",
-                        "Motion flag (sw_comp)",
-                        "Presence flag (sw_comp)",
+                        'Tambient (raw)',
+                        'Tobject (raw)',
+                        'Tobject (emb_comp)',
+                        'Tpresence',
+                        'Presence flag',
+                        'Tmotion',
+                        'Motion flag',
+                        'Tobject (sw_comp)',
+                        'Tobject_change (sw_comp)',
+                        'Motion flag (sw_comp)',
+                        'Presence flag (sw_comp)',
                     ]
                 elif s_category == SensorCategoryEnum.ISENSOR_CLASS_RANGING.value:
-                    if ss_stat.get("output_format"):
-                        resolution = ss_stat.get("resolution")
-                        if resolution is not None:
-                            res = int(resolution.split("x")[0])
-                        else:
-                            return []
-                        for i in range(res * res):
-                            al += [f"Target Status Z{i}", f"Distance Z{i}"]
+                    if ss_stat.get('output_format'):
+                        al = self.__get_ranging_output_column_names(ss_stat)
                     else:  # NOTE: Code for old firmware versions
-                        res = 4 if ss_stat["dim"] == 128 else 8
+                        res = 4 if ss_stat['dim'] == 128 else 8
                         for i in range(res * res):
                             al += [
-                                f"N Target Z{i}",
-                                f"Ambient per SPAD Z{i}",
-                                f"Signal per SPAD Z{i}",
-                                f"Target Status Z{i}",
-                                f"Distance Z{i}",
-                                f"Signal per SPAD Z{i}",
-                                f"Target Status Z{i}",
-                                f"Distance Z{i}",
+                                f'N Target Z{i}',
+                                f'Ambient per SPAD Z{i}',
+                                f'Signal per SPAD Z{i}',
+                                f'Target Status Z{i}',
+                                f'Distance Z{i}',
+                                f'Signal per SPAD Z{i}',
+                                f'Target Status Z{i}',
+                                f'Distance Z{i}',
                             ]
                 elif s_category == SensorCategoryEnum.ISENSOR_CLASS_CAMERA:
                     raise UnsupportedSensorCategoryError(sensor_name)
                 elif s_category == SensorCategoryEnum.ISENSOR_CLASS_POWERMETER.value:
-                    al = ["Voltage [mV]", "Voltage(VShunt) [mV]", "Current [A]", "Power [mW]"]
+                    al = ['Voltage [mV]', 'Voltage(VShunt) [mV]', 'Current [A]', 'Power [mW]']
                 else:
-                    if not (s_type == "mlc" or s_type == "stredl" or s_type == "ispu"):
-                        al = (
-                            ["x", "y", "z"]
-                            if num_axes == 3
-                            else ["x", "y"] if num_axes == 2 else ["x"]
-                        )
+                    if not (s_type == 'mlc' or s_type == 'stredl' or s_type == 'ispu'):
+                        al = ['x', 'y', 'z'] if num_axes == 3 else ['x', 'y'] if num_axes == 2 else ['x']
                     else:
                         al = self.get_mlc_ispu_output_column_names(comp_name=sensor_name)
                         # if s_type == "ispu":
@@ -2447,11 +2307,71 @@ class HSDatalog_v2:
                         #         al = [col_prefix + str(s) for s in cc]
                 return al
             else:
-                cc = range(ss_stat["dim"])
-                col_prefix = "reg_"
+                cc = range(ss_stat['dim'])
+                col_prefix = 'reg_'
                 return [col_prefix + str(s) for s in cc]
         else:
             return None
+
+    @staticmethod
+    def __get_ranging_output_column_names(ss_stat):
+        """Return one column name per ranging payload value from output_format."""
+        output_format = ss_stat.get('output_format')
+        nof_outputs = output_format.get('nof_outputs') if isinstance(output_format, dict) else None
+        if not isinstance(nof_outputs, int) or nof_outputs <= 0:
+            return []
+
+        output_fields = [
+            (field.get('start_id'), name)
+            for name, field in output_format.items()
+            if name != 'nof_outputs' and isinstance(field, dict)
+        ]
+        output_fields.sort(key=lambda item: item[0] if isinstance(item[0], int) else nof_outputs)
+        if len(output_fields) != nof_outputs:
+            return []
+
+        zones = int(ss_stat.get('dim', 0)) // nof_outputs
+        return [
+            f'{field_name.replace("_", " ").title()} Z{zone}'
+            for zone in range(zones)
+            for _, field_name in output_fields
+        ]
+
+    def __get_vl53l9_output_column_names(self, ss_stat, output_format_schema_name=None):
+        """Return one column name per VL53L9 payload value from output_format."""
+        return column_names(self._resolve_sensor_format(ss_stat))
+
+    def set_output_format_resolver(self, resolver):
+        """Set an instance-local compiled-schema resolver; None restores SDK defaults."""
+        self._output_format_resolver = resolver
+
+    def _resolve_sensor_format(self, ss_stat):
+        return self._compiled_sensor_format(ss_stat, getattr(self, '_output_format_resolver', None))
+
+    @staticmethod
+    def _compiled_sensor_format(ss_stat, resolver=None):
+        name = ss_stat['output_format']
+        resolution = ss_stat.get('resolution')
+        if isinstance(resolution, int) and name == 'schema_vl53l9_v1':
+            labels = ('4x4', '8x8', '12x10', '18x14', '24x24', '54x42')
+            if not 0 <= resolution < len(labels):
+                raise ValueError(f'Unknown resolution for {name!r}: {resolution!r}')
+            resolution = labels[resolution]
+        if resolution is not None and not isinstance(resolution, str):
+            raise ValueError(f'Cannot resolve matrix resolution for {name!r}: {resolution!r}')
+        matrix_shape = None
+        if resolution is not None:
+            columns, rows = (int(part) for part in resolution.lower().split('x'))
+            matrix_shape = (rows, columns)
+        compiled = (resolver or get_compiled)(name, matrix_shape=matrix_shape)
+        if matrix_shape is None and any(len(leaf.shape) == 2 for leaf in compiled.leaves):
+            raise ValueError(f'Cannot resolve matrix resolution for {name!r}: {resolution!r}')
+        byte_count = ss_stat['dim'] * TypeConversion.check_type_length(ss_stat['data_type'])
+        if compiled.payload_size_bytes != byte_count:
+            raise ValueError(
+                f'Payload size mismatch for {name!r}: expected {compiled.payload_size_bytes} bytes, got {byte_count}'
+            )
+        return compiled
 
     def get_component_columns_names(self, ss_stat, sensor_name):
         """
@@ -2464,45 +2384,41 @@ class HSDatalog_v2:
         Returns:
         - list: List of column names.
         """
-        s_type = ""
+        s_type = ''
         # d_type = ss_stat.get("data_type")
-        c_type = ss_stat.get("c_type")
+        c_type = ss_stat.get('c_type')
         if c_type == ComponentTypeEnum.SENSOR.value:
-            num_axes = int(ss_stat.get("dim", 1))
+            num_axes = int(ss_stat.get('dim', 1))
             _, s_type = FileManager.decode_file_name(sensor_name)
-            s_category = ss_stat.get("sensor_category")
+            s_category = ss_stat.get('sensor_category')
             if s_category is not None:
                 if s_category == SensorCategoryEnum.ISENSOR_CLASS_LIGHT.value:
-                    c = ["Red", "Visible", "Blue", "Green", "IR", "Clear"]
+                    c = ['Red', 'Visible', 'Blue', 'Green', 'IR', 'Clear']
                 elif s_category == SensorCategoryEnum.ISENSOR_CLASS_PRESENCE.value:
                     c = [
-                        "Tambient (raw)",
-                        "Tobject (raw)",
-                        "Tobject (emb_comp)",
-                        "Tpresence",
-                        "Presence flag",
-                        "Tmotion",
-                        "Motion flag",
-                        "Tobject (sw_comp)",
-                        "Tobject_change (sw_comp)",
-                        "Motion flag (sw_comp)",
-                        "Presence flag (sw_comp)",
+                        'Tambient (raw)',
+                        'Tobject (raw)',
+                        'Tobject (emb_comp)',
+                        'Tpresence',
+                        'Presence flag',
+                        'Tmotion',
+                        'Motion flag',
+                        'Tobject (sw_comp)',
+                        'Tobject_change (sw_comp)',
+                        'Motion flag (sw_comp)',
+                        'Presence flag (sw_comp)',
                     ]
                 elif s_category == SensorCategoryEnum.ISENSOR_CLASS_RANGING.value:
-                    if ss_stat.get("output_format"):
-                        resolution = ss_stat.get("resolution")
-                        if resolution is not None:
-                            res = int(resolution.split("x")[0])
+                    output_format = ss_stat.get('output_format')
+                    if output_format:
+                        if isinstance(output_format, dict):
+                            c = self.__get_ranging_output_column_names(ss_stat)
                         else:
-                            return []
-                        c = []
-                        # for i in range(res):
-                        #     for j in range(res):
-                        #         c += [f"Target Status T1_Z({i},{j})",f"Distance T1_Z({i},{j})"]
-                        for i in range(res * res):
-                            c += [f"Target Status Z{i}", f"Distance Z{i}"]
+                            if isinstance(output_format, str):
+                                c = self.__get_vl53l9_output_column_names(ss_stat, output_format)
+
                     else:  # NOTE: Code for old firmware versions
-                        res = 4 if ss_stat["dim"] == 128 else 8
+                        res = 4 if ss_stat['dim'] == 128 else 8
                         c = []
                         # Old firmware example (columns omitted for brevity):
                         # N Target Z(i,j), Ambient per SPAD Z(i,j), Signal per SPAD T1_Z(i,j),
@@ -2510,32 +2426,32 @@ class HSDatalog_v2:
                         # Target Status T2_Z(i,j), Distance T2_Z(i,j)
                         for i in range(res * res):
                             c += [
-                                f"N Target Z{i}",
-                                f"Ambient per SPAD Z{i}",
-                                f"Signal per SPAD Z{i}",
-                                f"Target Status Z{i}",
-                                f"Distance Z{i}",
-                                f"Signal per SPAD Z{i}",
-                                f"Target Status Z{i}",
-                                f"Distance Z{i}",
+                                f'N Target Z{i}',
+                                f'Ambient per SPAD Z{i}',
+                                f'Signal per SPAD Z{i}',
+                                f'Target Status Z{i}',
+                                f'Distance Z{i}',
+                                f'Signal per SPAD Z{i}',
+                                f'Target Status Z{i}',
+                                f'Distance Z{i}',
                             ]
 
                 elif s_category == SensorCategoryEnum.ISENSOR_CLASS_CAMERA:
                     raise UnsupportedSensorCategoryError(sensor_name)
                 elif s_category == SensorCategoryEnum.ISENSOR_CLASS_POWERMETER.value:
-                    c = ["Voltage [mV]", "Voltage(VShunt) [mV]", "Current [A]", "Power [mW]"]
+                    c = ['Voltage [mV]', 'Voltage(VShunt) [mV]', 'Current [A]', 'Power [mW]']
                 else:
                     c = self.__get_mems_columns_names(ss_stat, sensor_name, s_type, num_axes)
             else:
                 c = self.__get_mems_columns_names(ss_stat, sensor_name, s_type, num_axes)
 
         elif c_type == ComponentTypeEnum.ALGORITHM.value:
-            algo_type = ss_stat.get("algorithm_type")
+            algo_type = ss_stat.get('algorithm_type')
             if algo_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
-                cc = range(ss_stat["fft_length"])
+                cc = range(ss_stat['fft_length'])
             else:
-                cc = range(ss_stat["dim"])
-            col_prefix = sensor_name.upper() + "_"
+                cc = range(ss_stat['dim'])
+            col_prefix = sensor_name.upper() + '_'
             c = [col_prefix + str(s) for s in cc]
 
         elif c_type == ComponentTypeEnum.ACTUATOR.value:
@@ -2545,9 +2461,7 @@ class HSDatalog_v2:
 
         return c
 
-    def __to_dataframe(
-        self, data, time, ss_stat, sensor_name, labeled=False, which_tags: list = [], raw_flag=False
-    ):
+    def __to_dataframe(self, data, time, ss_stat, sensor_name, labeled=False, which_tags: list = [], raw_flag=False):
         """Assemble a labeled DataFrame from decoded arrays.
 
         Parameters:
@@ -2562,14 +2476,66 @@ class HSDatalog_v2:
         Returns:
         - pandas.DataFrame with rounding applied to float columns and proper dtypes.
         """
+        if isinstance(ss_stat.get('output_format'), str):
+            compiled = self._resolve_sensor_format(ss_stat)
+            if ss_stat['data_type'] not in ('uint8', 'uint8_t'):
+                raise ValueError('Schema payloads must use uint8 data')
+            decoder = OutputFormatDecoder(compiled)
+            columns = {'Time': np.asarray(time).reshape(-1)[: len(data)].round(6)}
+            types = {}
+            for leaf in compiled.leaves:
+                if leaf.type.value == 'bool':
+                    types[leaf.path] = np.bool_
+                elif leaf.type.value in ('float', 'double'):
+                    types[leaf.path] = np.float32 if leaf.type.value == 'float' else np.float64
+                else:
+                    width = next(width for width in (8, 16, 32, 64) if leaf.bit_width <= width)
+                    types[leaf.path] = getattr(np, f'{"int" if leaf.type.value == "int" else "uint"}{width}')
+            for name in column_names(compiled):
+                columns[name] = []
+            for start in range(0, len(data), 32):
+                for sample in data[start : start + 32]:
+                    decoded = decoder.decode(np.asarray(sample, dtype=np.uint8).tobytes())
+                    for leaf in compiled.leaves:
+                        values = decoded[leaf.path]
+                        if not leaf.shape:
+                            columns[leaf.path].append(values)
+                        elif len(leaf.shape) == 1:
+                            for index, value in enumerate(values):
+                                columns[f'{leaf.path}[{index}]'].append(value)
+                        else:
+                            for row, cells in enumerate(values):
+                                for column, value in enumerate(cells):
+                                    columns[f'{leaf.path}[{row},{column}]'].append(value)
+            ss_data_frame = pd.DataFrame(
+                {
+                    name: np.asarray(values, dtype=types[name.partition('[')[0]]) if name != 'Time' else values
+                    for name, values in columns.items()
+                }
+            )
+            if labeled:
+                tags = self.get_tags()
+                if not tags:
+                    raise MissingTagsException()
+                if which_tags:
+                    tags = [tag for tag in tags if tag['label'] in which_tags]
+                for tag in tags:
+                    label = tag['label']
+                    mask = np.zeros(len(ss_data_frame), dtype=bool)
+                    for enter_time, exit_time in tag['times']:
+                        mask |= (ss_data_frame['Time'].to_numpy() >= enter_time) & (
+                            ss_data_frame['Time'].to_numpy() <= exit_time
+                        )
+                    ss_data_frame[label] = mask
+            return ss_data_frame
         if data is not None and time is not None:
             cols = []
-            s_type = ""
-            c_type = ss_stat.get("c_type")
+            s_type = ''
+            c_type = ss_stat.get('c_type')
             if c_type == ComponentTypeEnum.SENSOR.value:
                 _, s_type = FileManager.decode_file_name(sensor_name)
 
-            if s_type != "ispu" and s_type != "mlc" and s_type != "stredl":
+            if s_type != 'ispu' and s_type != 'mlc' and s_type != 'stredl':
                 try:
                     if len(time) > len(data):
                         time = time[: len(data)]
@@ -2579,12 +2545,8 @@ class HSDatalog_v2:
             else:
                 mlc_ispu_out_types = self.get_mlc_ispu_output_types(comp_name=sensor_name)
                 if mlc_ispu_out_types is not None:
-                    output_bytes_count = sum(
-                        TypeConversion.check_type_length(ot) for ot in mlc_ispu_out_types
-                    )
-                    unpack_str = "=" + "".join(
-                        TypeConversion.get_format_char(ot) for ot in mlc_ispu_out_types
-                    )
+                    output_bytes_count = sum(TypeConversion.check_type_length(ot) for ot in mlc_ispu_out_types)
+                    unpack_str = '=' + ''.join(TypeConversion.get_format_char(ot) for ot in mlc_ispu_out_types)
                     output_data = []
                     output_time = []
                     for d, t in zip(data, time):
@@ -2621,9 +2583,7 @@ class HSDatalog_v2:
                 # else:
                 #     raise MissingISPUOutputDescriptorException(sensor_name)
 
-            cols = np.concatenate(
-                (["Time"], self.get_component_columns_names(ss_stat, sensor_name)), axis=0
-            )
+            cols = np.concatenate((['Time'], self.get_component_columns_names(ss_stat, sensor_name)), axis=0)
 
             try:
                 ss_data_frame = pd.DataFrame(data=val, columns=cols)
@@ -2635,12 +2595,12 @@ class HSDatalog_v2:
                 if len(tags) == 0:
                     raise MissingTagsException()
                 if len(which_tags) > 0:
-                    filtered_tags = [t for t in tags if t["label"] in which_tags]
+                    filtered_tags = [t for t in tags if t['label'] in which_tags]
                     tags = filtered_tags
 
                 for tag in tags:
-                    tag_label = tag.get("label")
-                    tag_times = tag.get("times")
+                    tag_label = tag.get('label')
+                    tag_times = tag.get('times')
                     for t in tag_times:
                         enter_time = t[0]
                         exit_time = t[1]
@@ -2663,41 +2623,56 @@ class HSDatalog_v2:
                         else:
                             ss_data_frame[tag_label] = ss_data_frame[tag_label] | bool_array
 
-            sensitivity = ss_stat.get("sensitivity", 1)
+            sensitivity = ss_stat.get('sensitivity', 1)
             if c_type == ComponentTypeEnum.ACTUATOR.value:
                 sensitivity = 0
             # Round time once
-            ss_data_frame["Time"] = ss_data_frame["Time"].round(6)
+            ss_data_frame['Time'] = ss_data_frame['Time'].round(6)
 
             data_cols = list(cols[1:])  # all data columns (skip "Time")
 
-            if s_type != "ispu":
-                data_type = ss_stat.get("data_type")
+            if s_type != 'ispu':
+                data_type = ss_stat.get('data_type')
                 # Cast data columns when raw or unscaled
                 if (raw_flag or sensitivity == 1) and data_type:
                     target_dtype = TypeConversion.get_np_dtype(data_type)
                     ss_data_frame.loc[:, data_cols] = ss_data_frame.loc[:, data_cols].astype(
-                        target_dtype, errors="ignore"
+                        target_dtype, errors='ignore'
                     )
+
+                if ss_stat.get('sensor_category') == SensorCategoryEnum.ISENSOR_CLASS_RANGING.value and isinstance(
+                    ss_stat.get('output_format'), dict
+                ):
+                    output_format = ss_stat['output_format']
+                    nof_outputs = output_format.get('nof_outputs')
+                    target_distance = output_format.get('target_distance')
+                    if (
+                        isinstance(nof_outputs, int)
+                        and nof_outputs > 0
+                        and isinstance(target_distance, dict)
+                        and isinstance(target_distance.get('start_id'), int)
+                    ):
+                        distance_columns = range(target_distance['start_id'], len(data_cols), nof_outputs)
+                        distance_columns = [data_cols[index] for index in distance_columns]
+                        ss_data_frame.loc[:, distance_columns] = (
+                            ss_data_frame.loc[:, distance_columns].astype(np.uint16) & self.DISTANCE_VALUE_MASK
+                        )
             else:
                 # ISPU: column-wise casting based on descriptor types
                 data_types = mlc_ispu_out_types
                 if (raw_flag or sensitivity == 1) and data_types:
-                    dtype_map = {
-                        col: TypeConversion.get_np_dtype(data_types[i])
-                        for i, col in enumerate(data_cols)
-                    }
-                    ss_data_frame = ss_data_frame.astype(dtype_map, errors="ignore")
+                    dtype_map = {col: TypeConversion.get_np_dtype(data_types[i]) for i, col in enumerate(data_cols)}
+                    ss_data_frame = ss_data_frame.astype(dtype_map, errors='ignore')
 
             # Round only float columns to 6 decimals
-            float_cols = ss_data_frame.loc[:, data_cols].select_dtypes(
-                include=["float", "float32", "float64", "double"]
-            ).columns
+            float_cols = (
+                ss_data_frame.loc[:, data_cols].select_dtypes(include=['float', 'float32', 'float64', 'double']).columns
+            )
             if len(float_cols) > 0:
                 ss_data_frame.loc[:, float_cols] = ss_data_frame.loc[:, float_cols].round(6)
 
             return ss_data_frame
-        log.error(f"Error extracting data and timestamp from sensor {sensor_name}")
+        log.error(f'Error extracting data and timestamp from sensor {sensor_name}')
         raise DataExtractionError(sensor_name)
 
     def get_dataframe(
@@ -2717,9 +2692,9 @@ class HSDatalog_v2:
         labeled, raw_flag, which_tags) instead.
         """
         warnings.warn(
-            "get_dataframe is deprecated. "
-            "Use get_dataframe_batch(comp_name, comp_status, start_time, end_time, "
-            "labeled, raw_flag, which_tags) instead.",
+            'get_dataframe is deprecated. '
+            'Use get_dataframe_batch(comp_name, comp_status, start_time, end_time, '
+            'labeled, raw_flag, which_tags) instead.',
             DeprecationWarning,
             stacklevel=2,
         )
@@ -2733,7 +2708,7 @@ class HSDatalog_v2:
             # data, time, ss_stat, sensor_name, labeled=False,
             # which_tags: list = [], raw_flag=False
             return self.__to_dataframe(data, time, s_stat, sensor_name, labeled, [], raw_flag)
-        log.error(f"Error extracting data and timestamps from {sensor_name} sensor .dat file")
+        log.error(f'Error extracting data and timestamps from {sensor_name} sensor .dat file')
         raise DataExtractionError(sensor_name)
 
     def get_dataframe_batch(
@@ -2756,15 +2731,11 @@ class HSDatalog_v2:
         Returns:
         - pandas.DataFrame or None if no data in the window.
         """
-        res = self.get_data_and_timestamps_batch(
-            comp_name, comp_status, start_time, end_time, raw_flag
-        )
+        res = self.get_data_and_timestamps_batch(comp_name, comp_status, start_time, end_time, raw_flag)
         if res[0] is not None and res[1] is not None:
             data, time = res
             if len(data) > 0:
-                return self.__to_dataframe(
-                    data, time, comp_status, comp_name, labeled, which_tags, raw_flag
-                )
+                return self.__to_dataframe(data, time, comp_status, comp_name, labeled, which_tags, raw_flag)
         return None
 
     def get_dat_file_list(self):
@@ -2785,13 +2756,212 @@ class HSDatalog_v2:
     # Plotting-related helpers and public methods below
     # Each plotting method documents inputs/behavior and returns Figure(s) or serves Dash.
     # Plots Helper Functions
-    def __plot_ranging_sensor(self, sensor_name, ss_data_frame, res, output_format):
+    def __plot_schema_sensor(self, frame, sensor_status):
+        compiled = self._resolve_sensor_format(sensor_status)
+        figures = []
+        comparisons = {
+            'eq': operator.eq,
+            'ne': operator.ne,
+            'lt': operator.lt,
+            'lte': operator.le,
+            'gt': operator.gt,
+            'gte': operator.ge,
+        }
+
+        def plot_values(leaf, sampled, names):
+            values = sampled[names].to_numpy()
+            if leaf.validity is not None:
+                ref = leaf.validity.ref
+                reference_names = [name.replace(leaf.path, ref, 1) for name in names]
+                valid = comparisons[leaf.validity.op](sampled[reference_names].to_numpy(), leaf.validity.value)
+                values = np.where(valid, values, np.nan)
+            return values
+
+        for leaf in compiled.leaves:
+            modes = {mode.value for mode in leaf.visualization} - {'hidden', 'value'}
+            if 'vl53l9' in sensor_status['output_format'].lower():
+                modes.discard('histogram')
+            if not modes:
+                continue
+            if len(leaf.shape) == 2:
+                rows, columns = leaf.shape
+                names = [f'{leaf.path}[{row},{column}]' for row in range(rows) for column in range(columns)]
+                if 'heatmap' in modes:
+                    selected = np.arange(len(frame))
+                    is_binary = all(np.issubdtype(frame[name].dtype, np.bool_) for name in names)
+                    matrices = [
+                        plot_values(leaf, frame.iloc[index], names).reshape(rows, columns) for index in selected
+                    ]
+                    if is_binary:
+                        matrices = [values.astype(np.uint8) for values in matrices]
+                    heatmap_options = (
+                        {
+                            'zmin': 0,
+                            'zmax': 1,
+                            'colorscale': [[0, '#1b1d23'], [1, '#00d4a0']],
+                            'colorbar': {'tickvals': [0, 1]},
+                        }
+                        if is_binary
+                        else {}
+                    )
+                    figure = go.Figure(
+                        data=[go.Heatmap(z=matrices[0], **heatmap_options)] if matrices else [],
+                        frames=[
+                            go.Frame(
+                                data=[go.Heatmap(z=values, **heatmap_options)],
+                                name=str(position),
+                            )
+                            for position, values in enumerate(matrices)
+                        ],
+                    )
+                    if len(selected) > 1:
+                        times = frame.iloc[selected]['Time'].to_numpy(dtype=float)
+                        intervals = np.diff(times)
+                        intervals = intervals[intervals > 0]
+                        frame_duration = max(
+                            1, int(round((float(np.median(intervals)) if len(intervals) else 0.5) * 1000))
+                        )
+                        animation = {
+                            'frame': {'duration': frame_duration, 'redraw': True},
+                            'transition': {'duration': 0},
+                            'mode': 'immediate',
+                        }
+                        figure.update_layout(
+                            updatemenus=[
+                                {
+                                    'type': 'buttons',
+                                    'direction': 'right',
+                                    'showactive': False,
+                                    'buttons': [
+                                        {
+                                            'label': 'Play',
+                                            'method': 'animate',
+                                            'args': [None, {**animation, 'fromcurrent': True}],
+                                        },
+                                        {
+                                            'label': 'Pause',
+                                            'method': 'animate',
+                                            'args': [
+                                                [None],
+                                                {
+                                                    'frame': {'duration': 0, 'redraw': True},
+                                                    'transition': {'duration': 0},
+                                                    'mode': 'immediate',
+                                                },
+                                            ],
+                                        },
+                                    ],
+                                    'font': {'size': 16},
+                                    'pad': {'l': 12, 'r': 12, 't': 8, 'b': 8},
+                                    'x': 1,
+                                    'y': -0.15,
+                                    'xanchor': 'right',
+                                    'yanchor': 'bottom',
+                                }
+                            ],
+                            sliders=[
+                                {
+                                    'steps': [
+                                        {
+                                            'method': 'animate',
+                                            'label': f'{frame.iloc[index]["Time"]:.2f} s',
+                                            'args': [[str(position)], animation],
+                                        }
+                                        for position, index in enumerate(selected)
+                                    ],
+                                    'active': 0,
+                                    'currentvalue': {'prefix': 'Time: '},
+                                    'transition': {'duration': 0},
+                                    'x': 0,
+                                    'y': -0.1,
+                                    'len': 1,
+                                }
+                            ],
+                        )
+                    figure.update_layout(title=leaf.path)
+                    figures.append(figure)
+                if leaf.role == 'distance' and len(frame):
+                    values = plot_values(leaf, frame, names)
+                    lines = go.Figure()
+                    for zone, name in enumerate(names):
+                        lines.add_trace(
+                            go.Scattergl(
+                                x=frame['Time'],
+                                y=values[:, zone],
+                                mode='lines',
+                                name=f'Z{zone}',
+                                visible=True if zone == 0 else 'legendonly',
+                            )
+                        )
+                    lines.update_layout(
+                        title=f'{leaf.path} over time per zone',
+                        xaxis_title='Time (s)',
+                        yaxis_title=f'Distance ({leaf.unit})' if leaf.unit else 'Distance',
+                        legend={'groupclick': 'toggleitem', 'itemsizing': 'constant'},
+                    )
+                    figures.append(lines)
+                if 'histogram' in modes and len(frame):
+                    figures.append(
+                        go.Figure(go.Histogram(x=plot_values(leaf, frame.iloc[0], names))).update_layout(
+                            title=f'{leaf.path} histogram'
+                        )
+                    )
+            elif not leaf.shape:
+                if 'line' in modes:
+                    sampled = frame.iloc[:: max(1, len(frame) // 2000)]
+                    figures.append(
+                        go.Figure(
+                            go.Scatter(
+                                x=sampled['Time'], y=plot_values(leaf, sampled, [leaf.path]).reshape(-1), mode='lines'
+                            )
+                        ).update_layout(title=leaf.path)
+                    )
+                elif 'value' in modes and len(frame):
+                    figures.append(
+                        go.Figure(
+                            go.Indicator(mode='number', value=float(plot_values(leaf, frame.iloc[-1], [leaf.path])[0]))
+                        ).update_layout(title=leaf.path)
+                    )
+            elif 'value' in modes and len(frame):
+                names = [f'{leaf.path}[{index}]' for index in range(leaf.shape[0])]
+                figures.append(
+                    go.Figure(go.Bar(x=names, y=plot_values(leaf, frame.iloc[-1], names))).update_layout(
+                        title=leaf.path
+                    )
+                )
+            elif 'histogram' in modes and len(frame):
+                names = [f'{leaf.path}[{index}]' for index in range(leaf.shape[0])]
+                figures.append(
+                    go.Figure(go.Histogram(x=plot_values(leaf, frame.iloc[-1], names))).update_layout(title=leaf.path)
+                )
+        if sensor_status.get('output_format') == 'schema_vl53l9_v1':
+            for figure in figures:
+                figure.add_annotation(
+                    text=f'<b>{VL53L9_RAW_DATA_DISCLAIMER}</b>',
+                    x=0.5,
+                    y=1.08,
+                    xref='paper',
+                    yref='paper',
+                    xanchor='center',
+                    yanchor='bottom',
+                    showarrow=False,
+                    align='center',
+                    bgcolor='#fff4d6',
+                    bordercolor='#b58a2a',
+                    borderwidth=1,
+                    borderpad=6,
+                    font={'color': '#5b430d', 'size': 12},
+                )
+        return figures
+
+    def __plot_ranging_sensor(self, sensor_name, ss_data_frame, res_rows, res_cols, output_format):
         """Build animated ToF heatmaps and pixel-over-time charts.
 
         Parameters:
         - sensor_name: str
         - ss_data_frame: DataFrame with Time + flattened target status/distance columns
-        - res: int resolution (e.g., 8 for 8x8)
+        - res_rows: int number of rows in the resolution (e.g., 54 for 54x42)
+        - res_cols: int number of columns in the resolution (e.g., 42 for 54x42)
         - output_format: dict describing output fields and stride
 
         Returns:
@@ -2800,48 +2970,57 @@ class HSDatalog_v2:
 
         # Function to extract the target identifier from the key
         def __extract_target_identifier(key):
-            if key != "nof_outputs":
-                return "".join(key.split("_")[:-1])
+            if key != 'nof_outputs':
+                return ''.join(key.split('_')[:-1])
             return None
 
         # Group the targets
         targets = {}
-        new_shape = (res, res)
+        new_shape = (res_rows, res_cols)
+
+        # Index matrix tracking, for each display cell, the original (untransformed)
+        # zone index; used to label zones consistently for non-square resolutions.
+        zone_idx_mat = np.arange(res_rows * res_cols).reshape(new_shape)
+        zone_idx_mat = np.rot90(zone_idx_mat, k=3)
+        zone_idx_mat = np.flip(zone_idx_mat, axis=0)
+        zone_idx_mat = np.swapaxes(zone_idx_mat, 0, 1)
 
         # Create a list to store figures to be returned
         figures = []
 
-        nof_outputs = output_format.get("nof_outputs")
+        nof_outputs = output_format.get('nof_outputs')
         for key, value in output_format.items():
             identifier = __extract_target_identifier(key)
             if identifier is not None:
                 # Initialize the target group if it doesn't exist
                 if identifier not in targets:
-                    targets[identifier] = {"status": None, "distance": None}
+                    targets[identifier] = {'status': None, 'distance': None}
                 # Assign the status or distance to the target group
-                if "status" in key:
-                    targets[identifier]["status"] = value
-                elif "distance" in key:
-                    targets[identifier]["distance"] = value
+                if 'status' in key:
+                    targets[identifier]['status'] = value
+                elif 'distance' in key:
+                    targets[identifier]['distance'] = value
 
         for t in targets:
-            dist_id = targets[t]["distance"]["start_id"] + 1
+            if targets[t]['distance'] is None:
+                continue
+            dist_id = targets[t]['distance']['start_id'] + 1
             dist_df = ss_data_frame.iloc[:, range(dist_id, len(ss_data_frame.columns), nof_outputs)]
-            status_id = targets[t]["status"]["start_id"] + 1
-            status_df = ss_data_frame.iloc[
-                :, range(status_id, len(ss_data_frame.columns), nof_outputs)
-            ]
-            status_df.columns = dist_df.columns
-            mask_df = status_df == 5
-            times = ss_data_frame["Time"]
-            # use the boolean matrix as a mask for the second dataframe
-            masked_df = dist_df.where(mask_df)
-            nof_rows = len(mask_df)
+            dist_df = dist_df.astype(np.uint16) & self.DISTANCE_VALUE_MASK
+            times = ss_data_frame['Time']
+            if targets[t]['status'] is not None:
+                status_id = targets[t]['status']['start_id'] + 1
+                status_df = ss_data_frame.iloc[:, range(status_id, len(ss_data_frame.columns), nof_outputs)]
+                status_df.columns = dist_df.columns
+                masked_df = dist_df.where(status_df == 5)
+            else:
+                masked_df = dist_df
+            nof_rows = len(dist_df)
 
             dist_matrices = np.empty((nof_rows,), dtype=object)
             for r_id in range(nof_rows):
                 row_t1 = masked_df.iloc[r_id]
-                t1_mat = np.array(row_t1.values).reshape(new_shape).astype("float")
+                t1_mat = np.array(row_t1.values).reshape(new_shape).astype('float')
                 t1_mat = np.rot90(t1_mat, k=3)
                 t1_mat = np.flip(t1_mat, axis=0)
                 t1_mat = np.swapaxes(t1_mat, 0, 1)
@@ -2856,27 +3035,27 @@ class HSDatalog_v2:
                 frame_annotations = np.zeros((new_shape[0], new_shape[1]), dtype=object)
                 for i in range(new_shape[0]):
                     for j in range(new_shape[1]):
-                        z_index = new_shape[0] * (new_shape[0] - 1 - i) + (new_shape[1] - 1 - j)
+                        z_index = int(zone_idx_mat[i, j])
                         z_value = dist_matrices[frame_idx][i][j]
                         if z_value == -1:
-                            z_str = "-"
+                            z_str = '-'
                         else:
-                            z_str = f"{int(z_value)}"
-                        frame_annotations[i][j] = f"Z{z_index}<br>{z_str}"
+                            z_str = f'{int(z_value)}'
+                        frame_annotations[i][j] = f'Z{z_index}<br>{z_str}'
                 annotations_list.append(frame_annotations)
 
             # Define a custom colorscale
             custom_colorscale = [
-                [0, "red"],  # Map -1 to red
-                [0.001, "rgb(68, 1, 84)"],  # Start of Viridis colorscale
-                [0.125, "rgb(72, 35, 116)"],
-                [0.25, "rgb(64, 67, 135)"],
-                [0.375, "rgb(52, 94, 141)"],
-                [0.5, "rgb(41, 120, 142)"],
-                [0.625, "rgb(32, 144, 140)"],
-                [0.75, "rgb(34, 167, 132)"],
-                [0.875, "rgb(68, 190, 112)"],
-                [1, "rgb(253, 231, 37)"],  # End of Viridis colorscale
+                [0, 'red'],  # Map -1 to red
+                [0.001, 'rgb(68, 1, 84)'],  # Start of Viridis colorscale
+                [0.125, 'rgb(72, 35, 116)'],
+                [0.25, 'rgb(64, 67, 135)'],
+                [0.375, 'rgb(52, 94, 141)'],
+                [0.5, 'rgb(41, 120, 142)'],
+                [0.625, 'rgb(32, 144, 140)'],
+                [0.75, 'rgb(34, 167, 132)'],
+                [0.875, 'rgb(68, 190, 112)'],
+                [1, 'rgb(253, 231, 37)'],  # End of Viridis colorscale
             ]
 
             # Create frames for animation
@@ -2889,7 +3068,7 @@ class HSDatalog_v2:
                             zmin=-1,
                             zmax=4000,
                             text=annotations_list[i],
-                            texttemplate="%{text}",
+                            texttemplate='%{text}',
                         )
                     ],
                     name=str(i),
@@ -2906,70 +3085,70 @@ class HSDatalog_v2:
                         zmin=-1,
                         zmax=4000,
                         text=annotations_list[0],
-                        texttemplate="%{text}",
+                        texttemplate='%{text}',
                     )
                 ],
                 frames=frames,
                 layout=go.Layout(
-                    title=f"{sensor_name.upper()} - Target {t}",
-                    xaxis=dict(scaleanchor="y", scaleratio=1),
+                    title=f'{sensor_name.upper()} - Target {t}',
+                    xaxis=dict(scaleanchor='y', scaleratio=1),
                     yaxis=dict(scaleratio=1),
                     updatemenus=[
                         {
-                            "type": "buttons",
-                            "direction": "right",
-                            "buttons": [
+                            'type': 'buttons',
+                            'direction': 'right',
+                            'buttons': [
                                 {
-                                    "label": "Play",
-                                    "method": "animate",
-                                    "args": [
+                                    'label': 'Play',
+                                    'method': 'animate',
+                                    'args': [
                                         None,
                                         {
-                                            "frame": {"duration": 500, "redraw": True},
-                                            "fromcurrent": True,
+                                            'frame': {'duration': 500, 'redraw': True},
+                                            'fromcurrent': True,
                                         },
                                     ],
                                 },
                                 {
-                                    "label": "Pause",
-                                    "method": "animate",
-                                    "args": [
+                                    'label': 'Pause',
+                                    'method': 'animate',
+                                    'args': [
                                         [None],
                                         {
-                                            "frame": {"duration": 0, "redraw": True},
-                                            "mode": "immediate",
+                                            'frame': {'duration': 0, 'redraw': True},
+                                            'mode': 'immediate',
                                         },
                                     ],
                                 },
                             ],
-                            "showactive": True,
-                            "x": 1,
-                            "y": -0.15,
-                            "xanchor": "right",
-                            "yanchor": "bottom",
+                            'showactive': True,
+                            'x': 1,
+                            'y': -0.15,
+                            'xanchor': 'right',
+                            'yanchor': 'bottom',
                         }
                     ],
                     sliders=[
                         {
-                            "steps": [
+                            'steps': [
                                 {
-                                    "args": [
+                                    'args': [
                                         [str(i)],
                                         {
-                                            "frame": {"duration": 500, "redraw": True},
-                                            "mode": "immediate",
+                                            'frame': {'duration': 500, 'redraw': True},
+                                            'mode': 'immediate',
                                         },
                                     ],
-                                    "label": f"{times[i]:.2f} s",
-                                    "method": "animate",
+                                    'label': f'{times[i]:.2f} s',
+                                    'method': 'animate',
                                 }
                                 for i in range(nof_rows)
                             ],
-                            "transition": {"duration": 300},
-                            "x": 0,
-                            "y": -0.1,
-                            "currentvalue": {"prefix": "Time: "},
-                            "len": 1,
+                            'transition': {'duration': 300},
+                            'x': 0,
+                            'y': -0.1,
+                            'currentvalue': {'prefix': 'Time: '},
+                            'len': 1,
                         }
                     ],
                 ),
@@ -2980,22 +3159,22 @@ class HSDatalog_v2:
                 go.Scatter(
                     x=[None],
                     y=[None],
-                    mode="markers",
-                    marker=dict(size=10, color="red", symbol="square"),
-                    legendgroup="Invalid Zones",
+                    mode='markers',
+                    marker=dict(size=10, color='red', symbol='square'),
+                    legendgroup='Invalid Zones',
                     showlegend=True,
-                    orientation="h",
-                    name="Invalid Zones",
+                    orientation='h',
+                    name='Invalid Zones',
                 )
             )
 
             # Update layout to place the legend above the graph and make it unclickable
             fig.update_layout(
                 legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
+                    orientation='h',
+                    yanchor='bottom',
                     y=1.02,
-                    xanchor="right",
+                    xanchor='right',
                     x=1,
                     itemclick=False,  # Disable click events
                     itemdoubleclick=False,  # Disable double-click events
@@ -3003,55 +3182,52 @@ class HSDatalog_v2:
             )
 
             # Change the browser tab name using the sensor_name
-            fig.update_layout(title_text=f"{sensor_name.upper()}", title_x=0.5)
+            fig.update_layout(title_text=f'{sensor_name.upper()}', title_x=0.5)
 
             # Add the figure to the list of figures
             figures.append(fig)
 
-        figures.append(
-            self.__plot_pixels_over_time(sensor_name, ss_data_frame, res * res, masked_df)
-        )
+        figures.append(self.__plot_pixels_over_time(sensor_name, ss_data_frame, res_rows, res_cols, masked_df))
 
         return figures
 
-    def __plot_pixels_over_time(self, sensor_name, ss_data_frame, resolution, t1_dist_df):
+    def __plot_pixels_over_time(self, sensor_name, ss_data_frame, res_rows, res_cols, t1_dist_df):
         """Create line plots of distance per zone over time for ToF sensors."""
         times_col = ss_data_frame.iloc[:, 0]
-        times_df = pd.DataFrame({"Time": times_col})
+        times_df = pd.DataFrame({'Time': times_col})
         ss_t1_dist_df = pd.concat([times_df, t1_dist_df.fillna(0)], axis=1)
 
         fig = make_subplots(rows=1, cols=1)
         fig.update_layout(
-            title=f"{sensor_name.upper()} - Distance over time per Zone",
+            title=f'{sensor_name.upper()} - Distance over time per Zone',
             title_x=0.5,
-            xaxis_title="Time (s)",
-            yaxis_title="Distance [mm]",
+            xaxis_title='Time (s)',
+            yaxis_title='Distance [mm]',
             showlegend=True,
         )
 
-        sqrt_res = int(math.sqrt(resolution))
-        for i in range(sqrt_res):
-            for j in range(sqrt_res - 1, -1, -1):
-                index = i * sqrt_res + j
-                line_name = f"Z{index}"
-                visible = True if index == 0 else "legendonly"
+        for i in range(res_rows):
+            for j in range(res_cols - 1, -1, -1):
+                index = i * res_cols + j
+                line_name = f'Z{index}'
+                visible = True if index == 0 else 'legendonly'
                 fig.add_trace(
                     go.Scatter(
-                        x=ss_t1_dist_df["Time"],
+                        x=ss_t1_dist_df['Time'],
                         y=ss_t1_dist_df.iloc[:, index + 1],
-                        mode="lines",
+                        mode='lines',
                         name=line_name,
                         visible=visible,
-                        legendgroup=f"group{index%(math.sqrt(resolution))}",
+                        legendgroup=f'group{index % res_cols}',
                     )
                 )
 
         fig.update_layout(
             legend=dict(
-                orientation="h",
-                groupclick="toggleitem",
-                itemsizing="constant",
-                xanchor="center",
+                orientation='h',
+                groupclick='toggleitem',
+                itemsizing='constant',
+                xanchor='center',
                 x=0.5,
             )
         )
@@ -3061,22 +3237,22 @@ class HSDatalog_v2:
     def __plot_light_sensor(self, sensor_name, dask_chunk, cols, label):
         """Plot Ambient Light Sensor channels with optional tag regions."""
         layout = go.Layout(
-            title=f"{sensor_name.upper()} - Ambient Light Sensor",
-            xaxis_title="Time (s)",
-            yaxis_title="ADC Count",
+            title=f'{sensor_name.upper()} - Ambient Light Sensor',
+            xaxis_title='Time (s)',
+            yaxis_title='ADC Count',
             autosize=True,
         )
         fig = go.Figure(layout=layout)
-        als_lines_colors = ["#000000", "#FF0000", "#999999", "#0000FF", "#00FF00", "#FF00FF"]
+        als_lines_colors = ['#000000', '#FF0000', '#999999', '#0000FF', '#00FF00', '#FF00FF']
         for i, c in enumerate(cols):
-            if c != "Time":
+            if c != 'Time':
                 y_column = c
                 color = als_lines_colors[i % len(als_lines_colors)]
                 fig.add_trace(
                     go.Scatter(
-                        x=dask_chunk["Time"],
+                        x=dask_chunk['Time'],
                         y=dask_chunk[y_column],
-                        mode="lines",
+                        mode='lines',
                         name=y_column,
                         line=dict(color=color),
                     )
@@ -3085,9 +3261,7 @@ class HSDatalog_v2:
         # Add vertical rectangles for labeled data
         if label is not None:
             label_time_tags = self.get_time_tags(label)
-            PlotUtils.draw_tags_regions(
-                fig, label_time_tags, dask_chunk["Time"].min(), dask_chunk["Time"].max()
-            )
+            PlotUtils.draw_tags_regions(fig, label_time_tags, dask_chunk['Time'].min(), dask_chunk['Time'].max())
         return fig
 
     def __plot_presence_sensor(
@@ -3099,9 +3273,9 @@ class HSDatalog_v2:
 
         # create a new layout for the Ambient & Object (raw) figure
         layout = go.Layout(
-            title=f"{sensor_name.upper()} - Ambient & Object (raw)",
-            xaxis_title="Time (s)",
-            yaxis_title="Value",
+            title=f'{sensor_name.upper()} - Ambient & Object (raw)',
+            xaxis_title='Time (s)',
+            yaxis_title='Value',
             autosize=True,
         )
         # Create a new figure with the previously defined layout
@@ -3110,14 +3284,12 @@ class HSDatalog_v2:
         # Plot Ambient and Object (raw) traces
         # Skip the first column (Time); plot next two columns
         # (Tambient (raw), Tobject (raw))
-        for idx, c in enumerate(
-            cols[1:3]
-        ):
+        for idx, c in enumerate(cols[1:3]):
             fig.add_trace(
                 go.Scatter(
-                    x=dask_chunk["Time"],
+                    x=dask_chunk['Time'],
                     y=dask_chunk[c],
-                    mode="lines",
+                    mode='lines',
                     name=c,
                     line=dict(color=PlotUtils.lines_colors[idx]),
                 )
@@ -3126,101 +3298,93 @@ class HSDatalog_v2:
         # Add vertical rectangles for labeled data
         if label is not None:
             label_time_tags = self.get_time_tags(label)
-            PlotUtils.draw_tags_regions(
-                fig, label_time_tags, dask_chunk["Time"].min(), dask_chunk["Time"].max()
-            )
+            PlotUtils.draw_tags_regions(fig, label_time_tags, dask_chunk['Time'].min(), dask_chunk['Time'].max())
 
         # Add Plot Ambient and Object (raw) figure to the list of figures to be returned
         figures.append(fig)
 
         # create a new layout for the Presence figure
         layout = go.Layout(
-            title=f"{sensor_name.upper()} - Presence",
-            xaxis_title="Time (s)",
-            yaxis_title="Value",
+            title=f'{sensor_name.upper()} - Presence',
+            xaxis_title='Time (s)',
+            yaxis_title='Value',
             autosize=True,
         )
         # Create a new figure with the previously defined layout
         fig = go.Figure(layout=layout)
 
-        line_color = "#335c67"
-        line_color_sw = "#bb3e03"
-        line_color_emb = "#ff9900"
+        line_color = '#335c67'
+        line_color_sw = '#bb3e03'
+        line_color_emb = '#ff9900'
         if software_compensation or embedded_compensation:
             fig = make_subplots(rows=2, cols=1)
             fig.add_trace(
                 go.Scatter(
-                    x=dask_chunk["Time"],
+                    x=dask_chunk['Time'],
                     y=dask_chunk[cols[4]],
                     line=dict(color=line_color),
-                    mode="lines",
+                    mode='lines',
                     name=cols[4],
                 ),
                 row=1,
                 col=1,
             )
-            fig.update_xaxes(title_text="Time (s)", row=1, col=1)
-            fig.update_yaxes(title_text="Value", row=1, col=1)
-            PlotUtils.draw_regions(fig, dask_chunk, "Presence flag", "#97D3C2", 0.5, 1, 1, False)
+            fig.update_xaxes(title_text='Time (s)', row=1, col=1)
+            fig.update_yaxes(title_text='Value', row=1, col=1)
+            PlotUtils.draw_regions(fig, dask_chunk, 'Presence flag', '#97D3C2', 0.5, 1, 1, False)
             if embedded_compensation:
                 fig.add_trace(
                     go.Scatter(
-                        x=dask_chunk["Time"],
+                        x=dask_chunk['Time'],
                         y=dask_chunk[cols[3]],
                         line=dict(color=line_color_emb),
-                        mode="lines",
+                        mode='lines',
                         name=cols[3],
                     ),
                     row=2,
                     col=1,
                 )
-                fig.update_xaxes(title_text="Time (s)", row=2, col=1)
-                fig.update_yaxes(title_text="Value", row=2, col=1)
+                fig.update_xaxes(title_text='Time (s)', row=2, col=1)
+                fig.update_yaxes(title_text='Value', row=2, col=1)
             if software_compensation:
                 fig.add_trace(
                     go.Scatter(
-                        x=dask_chunk["Time"],
+                        x=dask_chunk['Time'],
                         y=dask_chunk[cols[8]],
                         line=dict(color=line_color_sw),
-                        mode="lines",
+                        mode='lines',
                         name=cols[8],
                     ),
                     row=2,
                     col=1,
                 )
-                PlotUtils.draw_regions(
-                    fig, dask_chunk, "Presence flag (sw_comp)", "#FDD891", 0.5, 2, 1, False
-                )
-                fig.update_xaxes(title_text="Time (s)", row=2, col=1)
-                fig.update_yaxes(title_text="Value", row=2, col=1)
-            fig.update_layout(title_text=f"{sensor_name.upper()} - Presence")
+                PlotUtils.draw_regions(fig, dask_chunk, 'Presence flag (sw_comp)', '#FDD891', 0.5, 2, 1, False)
+                fig.update_xaxes(title_text='Time (s)', row=2, col=1)
+                fig.update_yaxes(title_text='Value', row=2, col=1)
+            fig.update_layout(title_text=f'{sensor_name.upper()} - Presence')
         else:
             fig.add_trace(
                 go.Scatter(
-                    x=dask_chunk["Time"],
+                    x=dask_chunk['Time'],
                     y=dask_chunk[cols[34]],
                     line=dict(color=line_color),
-                    mode="lines",
+                    mode='lines',
                     name=cols[4],
                 )
             )
-            PlotUtils.draw_regions(
-                fig, dask_chunk, "Presence flag", "#97D3C2", 0.5, show_label=False
-            )
+            PlotUtils.draw_regions(fig, dask_chunk, 'Presence flag', '#97D3C2', 0.5, show_label=False)
 
         # Add vertical rectangles for labeled data
         if label is not None:
             label_time_tags = self.get_time_tags(label)
-            PlotUtils.draw_tags_regions(
-                fig, label_time_tags, dask_chunk["Time"].min(), dask_chunk["Time"].max()
-            )
+            PlotUtils.draw_tags_regions(fig, label_time_tags, dask_chunk['Time'].min(), dask_chunk['Time'].max())
 
         figures.append(fig)
 
         layout = go.Layout(
-            title=f"{sensor_name.upper()} - Motion",
-            xaxis_title="Time (s)",
-            yaxis_title="Value",
+            title=f'{sensor_name.upper()} - Motion',
+            xaxis_title='Time (s)',
+            yaxis_title='Value',
             autosize=True,
         )
         fig = go.Figure(layout=layout)
@@ -3228,44 +3392,40 @@ class HSDatalog_v2:
 
         fig.add_trace(
             go.Scatter(
-                x=dask_chunk["Time"],
+                x=dask_chunk['Time'],
                 y=dask_chunk[cols[6]],
                 line=dict(color=line_color),
-                mode="lines",
+                mode='lines',
                 name=cols[6],
             ),
             row=1,
             col=1,
         )
-        fig.update_xaxes(title_text="Time (s)", row=1, col=1)
-        fig.update_yaxes(title_text="Value", row=1, col=1)
-        PlotUtils.draw_regions(fig, dask_chunk, "Motion flag", "#97D3C2", 0.5, 1, 1, False)
+        fig.update_xaxes(title_text='Time (s)', row=1, col=1)
+        fig.update_yaxes(title_text='Value', row=1, col=1)
+        PlotUtils.draw_regions(fig, dask_chunk, 'Motion flag', '#97D3C2', 0.5, 1, 1, False)
 
         fig.add_trace(
             go.Scatter(
-                x=dask_chunk["Time"],
+                x=dask_chunk['Time'],
                 y=dask_chunk[cols[9]],
                 line=dict(color=line_color_sw),
-                mode="lines",
+                mode='lines',
                 name=cols[9],
             ),
             row=2,
             col=1,
         )
-        PlotUtils.draw_regions(
-            fig, dask_chunk, "Motion flag (sw_comp)", "#FDD891", 0.5, 2, 1, False
-        )
-        fig.update_xaxes(title_text="Time (s)", row=2, col=1)
-        fig.update_yaxes(title_text="Value", row=2, col=1)
+        PlotUtils.draw_regions(fig, dask_chunk, 'Motion flag (sw_comp)', '#FDD891', 0.5, 2, 1, False)
+        fig.update_xaxes(title_text='Time (s)', row=2, col=1)
+        fig.update_yaxes(title_text='Value', row=2, col=1)
 
-        fig.update_layout(title_text=f"{sensor_name.upper()} - Motion")
+        fig.update_layout(title_text=f'{sensor_name.upper()} - Motion')
         figures.append(fig)
 
         return figures
 
-    def __plot_mems_audio_sensor(
-        self, sensor_name, dask_chunk, cols, dim, subplots, label, raw_flag, unit, fft_params
-    ):
+    def __plot_mems_audio_sensor(self, sensor_name, dask_chunk, cols, dim, subplots, label, raw_flag, unit, fft_params):
         """Plot MEMS/audio timeseries and optional spectrograms.
 
         - subplots: when True and dim>1, creates per-axis subplots.
@@ -3277,11 +3437,9 @@ class HSDatalog_v2:
 
         # create a new layout for the Ambient & Object (raw) figure
         layout = go.Layout(
-            title=sensor_name.upper() if (not raw_flag) else sensor_name.upper() + " (raw)",
-            xaxis_title="Time (s)",
-            yaxis_title=(
-                UnitMap().unit_dict.get(unit, unit) if (not raw_flag and unit is not None) else ""
-            ),
+            title=sensor_name.upper() if (not raw_flag) else sensor_name.upper() + ' (raw)',
+            xaxis_title='Time (s)',
+            yaxis_title=(UnitMap().unit_dict.get(unit, unit) if (not raw_flag and unit is not None) else ''),
             autosize=True,
         )
         # Create a new figure with the previously defined layout
@@ -3292,20 +3450,18 @@ class HSDatalog_v2:
             for i in range(dim):
                 fig.add_trace(
                     go.Scatter(
-                        x=dask_chunk["Time"],
+                        x=dask_chunk['Time'],
                         y=dask_chunk[cols[i + 1]],
                         line=dict(color=PlotUtils.lines_colors[i]),
-                        mode="lines",
+                        mode='lines',
                         name=cols[i + 1],
                     ),
                     row=i + 1,
                     col=1,
                 )
-                fig.update_xaxes(title_text="Time (s)", row=i + 1, col=1)
+                fig.update_xaxes(title_text='Time (s)', row=i + 1, col=1)
                 if not raw_flag and unit is not None:
-                    fig.update_yaxes(
-                        title_text=UnitMap().unit_dict.get(unit, unit), row=i + 1, col=1
-                    )
+                    fig.update_yaxes(title_text=UnitMap().unit_dict.get(unit, unit), row=i + 1, col=1)
         else:
             # if "_ispu" in sensor_name:
             #     n_lines = len(self.get_mlc_ispu_output_column_names())
@@ -3315,29 +3471,24 @@ class HSDatalog_v2:
             for i in range(n_lines):
                 fig.add_trace(
                     go.Scatter(
-                        x=dask_chunk["Time"],
+                        x=dask_chunk['Time'],
                         y=dask_chunk[cols[i + 1]],
                         line=dict(color=PlotUtils.lines_colors[i]),
-                        mode="lines",
+                        mode='lines',
                         name=cols[i + 1],
                     )
                 )
 
-        fig.update_layout(
-            title_text=sensor_name.upper() if (not raw_flag) else sensor_name.upper() + " (raw)"
-        )
+        fig.update_layout(title_text=sensor_name.upper() if (not raw_flag) else sensor_name.upper() + ' (raw)')
 
         # Add vertical rectangles for labeled data
         if label is not None:
             label_time_tags = self.get_time_tags(label)
-            PlotUtils.draw_tags_regions(
-                fig, label_time_tags, dask_chunk["Time"].min(), dask_chunk["Time"].max()
-            )
+            PlotUtils.draw_tags_regions(fig, label_time_tags, dask_chunk['Time'].min(), dask_chunk['Time'].max())
 
         figures.append(fig)
 
-        if fft_params is not None and ("_acc" in sensor_name or "_mic" in sensor_name):
-
+        if fft_params is not None and ('_acc' in sensor_name or '_mic' in sensor_name):
             odr = fft_params[1]
             window_size = 256
             # overlap = 128
@@ -3358,35 +3509,31 @@ class HSDatalog_v2:
                 freqs = np.fft.rfftfreq(window_size, d=1 / fs)
                 return freqs, times, 10 * np.log10(spec + 1e-12)  # Convert to dB
 
-            if "_mic" in sensor_name:
-                freqs, times, spec = compute_spectrogram(
-                    dask_chunk[cols[1]].values, odr, window_size, step
-                )
-                mic_fig = go.Figure(data=go.Heatmap(z=spec, x=times, y=freqs, colorscale="Viridis"))
+            if '_mic' in sensor_name:
+                freqs, times, spec = compute_spectrogram(dask_chunk[cols[1]].values, odr, window_size, step)
+                mic_fig = go.Figure(data=go.Heatmap(z=spec, x=times, y=freqs, colorscale='Viridis'))
                 mic_fig.update_layout(
-                    title=f"{sensor_name.upper()} - Spectrogram",
-                    xaxis_title="Time (s)",
-                    yaxis_title="Frequency (Hz)",
+                    title=f'{sensor_name.upper()} - Spectrogram',
+                    xaxis_title='Time (s)',
+                    yaxis_title='Frequency (Hz)',
                 )
                 figures.append(mic_fig)
-            elif "_acc" in sensor_name:
+            elif '_acc' in sensor_name:
                 axes = cols[1:]
                 specs = []
                 for axis in axes:
-                    freqs, times, spec = compute_spectrogram(
-                        dask_chunk[axis].values, odr, window_size, step
-                    )
+                    freqs, times, spec = compute_spectrogram(dask_chunk[axis].values, odr, window_size, step)
                     specs.append((axis, spec))
 
                 acc_mag = np.sqrt(np.sum([dask_chunk[axis].values ** 2 for axis in axes], axis=0))
                 freqs, times, spec = compute_spectrogram(acc_mag, odr, window_size, step)
-                specs.append(("ACC Magnitude", spec))
+                specs.append(('ACC Magnitude', spec))
 
                 acc_fig = make_subplots(
                     rows=len(specs),
                     cols=1,
                     shared_xaxes=True,
-                    subplot_titles=[f"{axis} - Spectrogram" for axis, _ in specs],
+                    subplot_titles=[f'{axis} - Spectrogram' for axis, _ in specs],
                 )
 
                 for i, (axis, z) in enumerate(specs, start=1):
@@ -3395,19 +3542,19 @@ class HSDatalog_v2:
                             z=z,
                             x=times,
                             y=freqs,
-                            colorscale="Viridis",
+                            colorscale='Viridis',
                             showscale=(i == len(specs)),  # Only last subplot gets colorbar
-                            colorbar=dict(title="dB") if i == len(specs) else None,
+                            colorbar=dict(title='dB') if i == len(specs) else None,
                         ),
                         row=i,
                         col=1,
                     )
-                    acc_fig.update_yaxes(title_text="Frequency (Hz)", row=i, col=1)
+                    acc_fig.update_yaxes(title_text='Frequency (Hz)', row=i, col=1)
 
                 acc_fig.update_layout(
                     height=300 * len(specs),
-                    title_text=f"{sensor_name.upper()} - Spectrogram",
-                    xaxis_title="Time (s)",
+                    title_text=f'{sensor_name.upper()} - Spectrogram',
+                    xaxis_title='Time (s)',
                 )
                 figures.append(acc_fig)
 
@@ -3453,7 +3600,7 @@ class HSDatalog_v2:
         # Function to find a free port
         def find_free_port():
             with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                s.bind(("", 0))
+                s.bind(('', 0))
                 return s.getsockname()[1]
 
         # Find a free port
@@ -3464,29 +3611,29 @@ class HSDatalog_v2:
 
         # Save plots as HTML files if required
         if save_plot:
-            html_file = os.path.join(self.get_acquisition_path(), f"{comp_name}.html")
+            html_file = os.path.join(self.get_acquisition_path(), f'{comp_name}.html')
             resampler.write_html(html_file)
 
         app = Dash(__name__)
-        app.title = f"{comp_name}"
+        app.title = f'{comp_name}'
 
         has_heatmap = any(isinstance(trace, go.Heatmap) for trace in fig.data)
-        if "_tof" in comp_name and has_heatmap:
+        if '_tof' in comp_name and has_heatmap:
             app.layout = html.Div(
                 [
-                    dcc.Graph(figure=fig, style={"height": "95vh"}),
+                    dcc.Graph(figure=fig, style={'height': '95vh'}),
                 ]
             )
         else:
             app.layout = html.Div(
                 [
-                    dcc.Graph(id="my-graph", figure=resampler, style={"height": "95vh"}),
+                    dcc.Graph(id='my-graph', figure=resampler, style={'height': '95vh'}),
                     # Hidden store used as a dummy output for the double-click callback.
-                    dcc.Store(id="my-graph-dblclick-reset"),
+                    dcc.Store(id='my-graph-dblclick-reset'),
                 ]
             )
             # Register the resampler callback
-            resampler.register_update_graph_callback(app, "my-graph")
+            resampler.register_update_graph_callback(app, 'my-graph')
 
             # plotly-resampler only re-aggregates the full-resolution data when the
             # relayout event carries both "autorange" and "showspikes" (i.e. the
@@ -3536,8 +3683,8 @@ class HSDatalog_v2:
                     return ns.no_update;
                 }
                 """,
-                Output("my-graph-dblclick-reset", "data"),
-                Input("my-graph", "relayoutData"),
+                Output('my-graph-dblclick-reset', 'data'),
+                Input('my-graph', 'relayoutData'),
                 prevent_initial_call=True,
             )
 
@@ -3545,23 +3692,23 @@ class HSDatalog_v2:
         pt.start()
         self.plot_threads.append(pt)
 
-        webbrowser.open(f"http://127.0.0.1:{port}")
+        webbrowser.open(f'http://127.0.0.1:{port}')
 
     # Stream Parquet row-groups to keep memory low (requires fastparquet)
     def _iter_parquet_row_groups(self, path: str, columns=None):
         """
         Generator that yields pandas DataFrames for each row group in a Parquet file.
-        Parameters: 
+        Parameters:
             -path: str path to the Parquet file
             -columns: list of str column names to read (default: all columns)
         Yields:
             - pandas.DataFrame for each row group
         """
         if ParquetFile is None:
-            raise RuntimeError("fastparquet not installed. Please run: pip install fastparquet")
+            raise RuntimeError('fastparquet not installed. Please run: pip install fastparquet')
         pf = ParquetFile(path)
         # Prefer the iterator API to avoid version-specific kwargs
-        if hasattr(pf, "iter_row_groups"):
+        if hasattr(pf, 'iter_row_groups'):
             for df in pf.iter_row_groups(columns=columns):
                 yield df
             return
@@ -3592,6 +3739,7 @@ class HSDatalog_v2:
         - Dask DataFrame or None if error occurs
         """
         from stdatalog_core.HSD.HSDatalog import HSDatalog
+
         try:
             labeled = label is not None
             # Define the file path for the parquet file
@@ -3606,11 +3754,12 @@ class HSDatalog_v2:
                     labeled,
                     raw_flag,
                     self.get_acquisition_path(),
-                    "PARQUET",
+                    'PARQUET',
                 )
             # Try Dask only if available; else return an iterator of pandas DataFrames
             try:
                 import dask.dataframe as dd  # lazy import
+
                 return dd.read_parquet(file_path)
             except Exception:
                 if os.path.exists(file_path):
@@ -3651,6 +3800,7 @@ class HSDatalog_v2:
         """
         _ = which_tags  # currently unused
         from stdatalog_core.HSD.HSDatalog import HSDatalog
+
         try:
             labeled = label is not None
             # Define the file path for the parquet file
@@ -3664,7 +3814,7 @@ class HSDatalog_v2:
                 labeled,
                 raw_flag,
                 self.get_acquisition_path(),
-                "PARQUET",
+                'PARQUET',
             )
             # Check if the parquet file exists
             if not os.path.exists(file_path):
@@ -3673,6 +3823,7 @@ class HSDatalog_v2:
             use_dask = False
             try:
                 import dask.dataframe as dd  # lazy import
+
                 dask_df = dd.read_parquet(file_path)
                 use_dask = True
             except Exception:
@@ -3683,25 +3834,21 @@ class HSDatalog_v2:
             # Filter columns to plot
             columns_to_plot = None
             if use_dask:
-                columns_to_plot = [
-                    c for c in dask_df.columns if c not in (acq_label_classes or [])
-                ]
+                columns_to_plot = [c for c in dask_df.columns if c not in (acq_label_classes or [])]
 
             if save_plots:
                 # Define the output directory for saving plots
-                output_dir = "plots"
+                output_dir = 'plots'
                 os.makedirs(output_dir, exist_ok=True)
 
-            sensor_category = sensor_status.get("sensor_category")
+            sensor_category = sensor_status.get('sensor_category')
             figures = []
 
             if use_dask:
                 # Dask path (unchanged behavior)
                 for delayed_chunk in dask_df.to_delayed():
                     chunk = delayed_chunk.compute()
-                    columns_to_plot = [
-                        c for c in chunk.columns if c not in (acq_label_classes or [])
-                    ]
+                    columns_to_plot = [c for c in chunk.columns if c not in (acq_label_classes or [])]
 
                     # Uncomment the following lines to log the size of each chunk
                     # with open("dask_log.txt", "a") as log_file:
@@ -3710,15 +3857,19 @@ class HSDatalog_v2:
                     #         f"size: {len(chunk)} rows, partitions: {dask_df.partitions}\n"
                     #     )
 
-                    if sensor_category == SensorCategoryEnum.ISENSOR_CLASS_RANGING.value:
-                        resolution = sensor_status.get("resolution")
+                    if isinstance(sensor_status.get('output_format'), str):
+                        figures = self.__plot_schema_sensor(chunk, sensor_status)
+                    elif sensor_category == SensorCategoryEnum.ISENSOR_CLASS_RANGING.value:
+                        output_format = sensor_status.get('output_format')
+                        resolution = sensor_status.get('resolution')
                         if resolution is not None:
-                            res = int(resolution.split("x")[0])
-                            output_format = sensor_status.get("output_format")
+                            res_cols, res_rows = (int(v) for v in resolution.split('x'))
+                            output_format = sensor_status.get('output_format')
                             figures = self.__plot_ranging_sensor(
                                 sensor_name,
                                 chunk,
-                                res,
+                                res_rows,
+                                res_cols,
                                 output_format,
                             )
                     elif sensor_category == SensorCategoryEnum.ISENSOR_CLASS_LIGHT.value:
@@ -3730,10 +3881,10 @@ class HSDatalog_v2:
                             chunk,
                             columns_to_plot,
                             label,
-                            sensor_status.get("software_compensation"),
-                            sensor_status.get("embedded_compensation"),
+                            sensor_status.get('software_compensation'),
+                            sensor_status.get('embedded_compensation'),
                         )
-                    else: # ISENSOR_CLASS_MEMS and ISENSOR_CLASS_AUDIO
+                    else:  # ISENSOR_CLASS_MEMS and ISENSOR_CLASS_AUDIO
                         fft_params = None
                         if fft_plots:
                             odr = sensor_status.get('odr', 1)
@@ -3754,18 +3905,20 @@ class HSDatalog_v2:
             else:
                 # fastparquet streaming fallback
                 for chunk in self._iter_parquet_row_groups(file_path):
-                    columns_to_plot = [
-                        c for c in chunk.columns if c not in (acq_label_classes or [])
-                    ]
-                    if sensor_category == SensorCategoryEnum.ISENSOR_CLASS_RANGING.value:
-                        resolution = sensor_status.get("resolution")
+                    columns_to_plot = [c for c in chunk.columns if c not in (acq_label_classes or [])]
+                    if isinstance(sensor_status.get('output_format'), str):
+                        figures = self.__plot_schema_sensor(chunk, sensor_status)
+                    elif sensor_category == SensorCategoryEnum.ISENSOR_CLASS_RANGING.value:
+                        output_format = sensor_status.get('output_format')
+                        resolution = sensor_status.get('resolution')
                         if resolution is not None:
-                            res = int(resolution.split("x")[0])
-                            output_format = sensor_status.get("output_format")
+                            res_cols, res_rows = (int(v) for v in resolution.split('x'))
+                            output_format = sensor_status.get('output_format')
                             figures = self.__plot_ranging_sensor(
                                 sensor_name,
                                 chunk,
-                                res,
+                                res_rows,
+                                res_cols,
                                 output_format,
                             )
                     elif sensor_category == SensorCategoryEnum.ISENSOR_CLASS_LIGHT.value:
@@ -3777,8 +3930,8 @@ class HSDatalog_v2:
                             chunk,
                             columns_to_plot,
                             label,
-                            sensor_status.get("software_compensation"),
-                            sensor_status.get("embedded_compensation"),
+                            sensor_status.get('software_compensation'),
+                            sensor_status.get('embedded_compensation'),
                         )
                     else:
                         fft_params = None
@@ -3807,7 +3960,7 @@ class HSDatalog_v2:
             # Handle missing ISPU output descriptor exception
             log.error(ispu_err)
             log.warning(
-                "Please copy the right ISPU configuration file (JSON) in your "
+                'Please copy the right ISPU configuration file (JSON) in your '
                 f'"{self.get_acquisition_path()}" '
                 'acquisition folder.'
             )
@@ -3827,7 +3980,7 @@ class HSDatalog_v2:
         save_plots=False,
     ):
         """Proxy to get_sensor_plot for actuator components (subplots default True)."""
-        subplots=True
+        subplots = True
         self.get_sensor_plot(
             actuator_name,
             actuator_status,
@@ -3859,6 +4012,7 @@ class HSDatalog_v2:
         _ = which_tags  # Unused
         _ = subplots  # Unused
         from stdatalog_core.HSD.HSDatalog import HSDatalog
+
         try:
             labeled = label is not None
             # Define the file path for the parquet file
@@ -3872,7 +4026,7 @@ class HSDatalog_v2:
                 labeled,
                 raw_flag,
                 self.get_acquisition_path(),
-                "PARQUET",
+                'PARQUET',
             )
             # Check if the parquet file exists
             if not os.path.exists(file_path):
@@ -3881,17 +4035,18 @@ class HSDatalog_v2:
             use_dask = False
             try:
                 import dask.dataframe as dd  # lazy import
+
                 dask_df = dd.read_parquet(file_path)
                 use_dask = True
             except Exception:
                 dask_df = None
 
             if use_dask:
-                algo_type = algorithm_status.get("algorithm_type")
+                algo_type = algorithm_status.get('algorithm_type')
                 if algo_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
-                    s_dim = algorithm_status.get("fft_length")
+                    s_dim = algorithm_status.get('fft_length')
                 else:
-                    s_dim = algorithm_status.get("dim")
+                    s_dim = algorithm_status.get('dim')
                 # Get the acquisition label classes
                 acq_label_classes = self.get_acquisition_label_classes()
                 # Filter columns to plot
@@ -3900,14 +4055,14 @@ class HSDatalog_v2:
                 # ]
                 if algo_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
                     fft_length = s_dim
-                    fft_sample_freq = algorithm_status.get("fft_sample_freq")
+                    fft_sample_freq = algorithm_status.get('fft_sample_freq')
                     if fft_sample_freq is None:
-                        log.error("FFT Sample Freq. unknown")
-                        raise MissingPropertyError("fft_sample_freq")
+                        log.error('FFT Sample Freq. unknown')
+                        raise MissingPropertyError('fft_sample_freq')
                     for chunk in dask_df.to_delayed():
                         chunk = chunk.compute()
                         # Prepare data for spectrogram
-                        df_array = chunk.iloc[:, 1:].T.to_numpy(dtype="float")
+                        df_array = chunk.iloc[:, 1:].T.to_numpy(dtype='float')
                         y_value = np.square(df_array)
                         y_value = y_value / (fft_length * fft_sample_freq)
                         y_value = 10 * np.log10(y_value)
@@ -3917,34 +4072,32 @@ class HSDatalog_v2:
                             data=go.Heatmap(
                                 z=y_value,
                                 y=freqs,
-                                colorscale="Viridis",
+                                colorscale='Viridis',
                                 colorbar=dict(
-                                    title="dB",
-                                    len=1.0,      # Full subplot height
-                                    y=0.5,        # Centered vertically
-                                    yanchor='middle'
-                                )
+                                    title='dB',
+                                    len=1.0,  # Full subplot height
+                                    y=0.5,  # Centered vertically
+                                    yanchor='middle',
+                                ),
                             )
                         )
                         fig.update_layout(
-                            title=f"{algorithm_name.upper()} - Spectrogram",
-                            yaxis_title="Frequency (Hz)",
-                            height=600
+                            title=f'{algorithm_name.upper()} - Spectrogram', yaxis_title='Frequency (Hz)', height=600
                         )
                         self.__show_plot_in_browser(fig, algorithm_name)
                 else:
-                    log.error("Algorithm type selected is not supported.")
+                    log.error('Algorithm type selected is not supported.')
             else:
                 # fastparquet streaming fallback for FFT only
-                algo_type = algorithm_status.get("algorithm_type")
+                algo_type = algorithm_status.get('algorithm_type')
                 if algo_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
-                    s_dim = algorithm_status.get("fft_length")
-                    fft_sample_freq = algorithm_status.get("fft_sample_freq")
+                    s_dim = algorithm_status.get('fft_length')
+                    fft_sample_freq = algorithm_status.get('fft_sample_freq')
                     if fft_sample_freq is None:
-                        log.error("FFT Sample Freq. unknown")
-                        raise MissingPropertyError("fft_sample_freq")
+                        log.error('FFT Sample Freq. unknown')
+                        raise MissingPropertyError('fft_sample_freq')
                     for chunk in self._iter_parquet_row_groups(file_path):
-                        df_array = chunk.iloc[:, 1:].T.to_numpy(dtype="float")
+                        df_array = chunk.iloc[:, 1:].T.to_numpy(dtype='float')
                         y_value = np.square(df_array)
                         y_value = y_value / (s_dim * fft_sample_freq)
                         y_value = 10 * np.log10(y_value)
@@ -3953,41 +4106,41 @@ class HSDatalog_v2:
                             data=go.Heatmap(
                                 z=y_value,
                                 y=freqs,
-                                colorscale="Viridis",
+                                colorscale='Viridis',
                                 colorbar=dict(
-                                    title="dB",
+                                    title='dB',
                                     len=1.0,
                                     y=0.5,
-                                    yanchor="middle",
+                                    yanchor='middle',
                                 ),
                             )
                         )
                         fig.update_layout(
-                            title=f"{algorithm_name.upper()} - Spectrogram",
-                            yaxis_title="Frequency (Hz)",
+                            title=f'{algorithm_name.upper()} - Spectrogram',
+                            yaxis_title='Frequency (Hz)',
                             height=600,
                         )
                         self.__show_plot_in_browser(fig, algorithm_name)
                 else:
-                    log.error("Algorithm type selected is not supported.")
+                    log.error('Algorithm type selected is not supported.')
 
             # Delete the Parquet file after processing
             if os.path.exists(file_path):
                 os.remove(file_path)
 
         except MissingPropertyError as exc:
-            log.error(f"Missing {exc} Property Error!")
+            log.error(f'Missing {exc} Property Error!')
             raise
         except MemoryError:
             log.error(
-                f"Memory Error occoured! You should batch process your "
-                f"{FileManager.encode_file_name(algorithm_name)} file"
+                f'Memory Error occoured! You should batch process your '
+                f'{FileManager.encode_file_name(algorithm_name)} file'
             )
             raise
-        except  ValueError:
+        except ValueError:
             log.error(
-                f"Value Error occoured! You should batch process your "
-                f"{FileManager.encode_file_name(algorithm_name)} file"
+                f'Value Error occoured! You should batch process your '
+                f'{FileManager.encode_file_name(algorithm_name)} file'
             )
             raise
 
@@ -3996,7 +4149,7 @@ class HSDatalog_v2:
     # === OFFLINE CLI Interaction ===
     def prompt_device_id_select_CLI(self, device_list):
         """Prompt to select a device by index; return selected index."""
-        selected_device = CLI.select_item("Device", device_list)
+        selected_device = CLI.select_item('Device', device_list)
         selected_device_id = device_list.index(selected_device)
         return selected_device_id
 
@@ -4004,26 +4157,26 @@ class HSDatalog_v2:
         """Prompt to select a sensor component; returns the selected dict entry."""
         if sensor_list is None:
             sensor_list = self.get_sensor_list()
-        return CLI.select_item("PnPL_Component", sensor_list)
+        return CLI.select_item('PnPL_Component', sensor_list)
 
     def prompt_algorithm_select_CLI(self, algo_list=None):
         """Prompt to select an algorithm component."""
         if algo_list is None:
             algo_list = self.get_algorithm_list()
-        return CLI.select_item("PnPL_Component", algo_list)
+        return CLI.select_item('PnPL_Component', algo_list)
 
     def prompt_actuator_select_CLI(self, actuator_list=None):
         """Prompt to select an actuator component."""
         if actuator_list is None:
             actuator_list = self.get_actuator_list()
-        return CLI.select_item("PnPL_Component", actuator_list)
+        return CLI.select_item('PnPL_Component', actuator_list)
 
     def prompt_actuator_telemetries_select_CLI(self, actuator_stat, telemetry_keys):
         """Prompt to select telemetry keys from an actuator status dict."""
         telemetry_list = []
         for tk in telemetry_keys:
             telemetry_list.append({tk: actuator_stat[tk]})
-        return CLI.select_items("PnPL_Component", telemetry_list)
+        return CLI.select_items('PnPL_Component', telemetry_list)
 
     def prompt_component_select_CLI(self, component_list=None):
         """Prompt to select any component (sensor+algorithm merged list)."""
@@ -4031,19 +4184,19 @@ class HSDatalog_v2:
             sensor_list = self.get_sensor_list()
             algo_list = self.get_algorithm_list()
             component_list = sensor_list + algo_list
-        return CLI.select_item("PnPL_Component", component_list)
+        return CLI.select_item('PnPL_Component', component_list)
 
     def prompt_file_select_CLI(self, dat_file_list=None):
         """Prompt to select a dat file from model expectation or folder listing."""
         if dat_file_list is None:
             dat_file_list = FileManager.get_file_names_from_model(self.device_model)
-        return CLI.select_item("Data File", dat_file_list)
+        return CLI.select_item('Data File', dat_file_list)
 
     def prompt_label_select_CLI(self, label_list=None):
         """Prompt to select a tag label from acquisition_info or provided list."""
         if label_list is None or len(label_list) == 0:
             label_list = self.get_acquisition_label_classes()
-        return CLI.select_item("Labels", label_list)
+        return CLI.select_item('Labels', label_list)
 
     def present_device_info(self, device_info=None):
         """
@@ -4131,4 +4284,4 @@ class HSDatalog_v2:
             CLI.present_item(sensor)
         else:
             # If no sensor information is provided, display a warning message to the user.
-            log.warning("No sensor selected")
+            log.warning('No sensor selected')

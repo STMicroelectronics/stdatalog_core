@@ -155,22 +155,40 @@ class DataReader(object):
         if samples_per_ts != 0:
             self.data_size = self.sample_size * self.samples_per_ts * self.dimensions
             self.time_size = 8
-            self.time_format = "d"
+            self.time_format = 'd'
         else:
             self.data_size = self.sample_size * self.dimensions
             self.time_size = 0
-            self.time_format = ""
+            self.time_format = ''
         self.data_format = data_format
         self.next_is_timestamp = False
+
+        # Precomputed constants for the zero-copy multi-packet parsing fast path.
+        # packet_size is the byte length of one full frame (data + optional timestamp).
+        self.packet_size = self.data_size + self.time_size
+        # When timestamps are present, frames are parsed with a NumPy structured
+        # dtype so the data field can be extracted while the trailing timestamp
+        # bytes are skipped, without any per-element Python loops.
+        if samples_per_ts != 0:
+            self._n_frame_vals = self.samples_per_ts * self.dimensions
+            self._frame_dtype = np.dtype(
+                [
+                    ('data', self.data_format, (self._n_frame_vals,)),
+                    ('ts', 'V{}'.format(self.time_size)),
+                ]
+            )
+        else:
+            self._n_frame_vals = self.dimensions
+            self._frame_dtype = None
 
         self.data_buffer = []
         self.data_dict = {}
 
         self.data_samples_counter = 0
-        self.rem_dim_bytes = ""
+        self.rem_dim_bytes = ''
         self.missing_time_bytes = 0
 
-        self.rem_data_bytes = ""
+        self.rem_data_bytes = ''
 
     def get_largest_mult_of_n_lower_than_m(self, n, m):
         """
@@ -220,9 +238,7 @@ class DataReader(object):
             packet_start = packet_idx * packet_size
             data_end = packet_start + self.data_size
             packet_end = packet_start + packet_size
-            expanded_frames.extend(
-                TypeConversion.int24_buffer_to_int32_buffer(data[packet_start:data_end])
-            )
+            expanded_frames.extend(TypeConversion.int24_buffer_to_int32_buffer(data[packet_start:data_end]))
             expanded_frames.extend(data[data_end:packet_end])
 
         return bytes(expanded_frames)
@@ -268,85 +284,54 @@ class DataReader(object):
 
         else:
             # n_cplt_packet >= 1 here; 0 case handled in the branch above
-            n_cplt_packet = math.floor(len(data) / (self.data_size + self.time_size))
-            # Create the format string to unpack the buffer; include timestamp when spts != 0
-            if self.samples_per_ts != 0:
-                s_format = "=" + str(
-                    n_cplt_packet
-                    * (
-                        str(str(self.samples_per_ts * self.dimensions) + self.data_format)
-                        + (str(self.time_format))
-                    )
-                )
-            else:
-                s_format = "=" + str(n_cplt_packet * (str(str(self.dimensions) + self.data_format)))
-            # unpack data from the byte raw data buffer
-            # copy data into buffer
+            packet_size = self.packet_size
+            n_cplt_packet = len(data) // packet_size
+            # Zero-copy extraction of the complete frames.
+            # Each frame is [data (n_frame_vals samples)] + [timestamp (time_size bytes)].
+            # A NumPy structured dtype lets us reinterpret the raw bytes and pick
+            # only the "data" field, dropping timestamps without any per-element
+            # Python unpacking / list building / strided deletion.
             if self.sample_size == 3:
+                # 24-bit samples are expanded to 32-bit first (timestamps kept raw).
                 data_t = self.expand_int24_payload_frames(data, n_cplt_packet)
-                self.data_buffer = list(struct.unpack(s_format, data_t))
             else:
-                data_t = data[: n_cplt_packet * (self.data_size + self.time_size)]
-                self.data_buffer = list(struct.unpack(s_format, data_t))
-            # remove timestamps extracted
+                data_t = data[: n_cplt_packet * packet_size]
             if self.samples_per_ts != 0:
-                del self.data_buffer[
-                    (self.samples_per_ts * self.dimensions) :: (
-                        self.samples_per_ts * self.dimensions
-                    )
-                    + 1
-                ]
-            # else:
-            # del self.data_buffer[self.dimensions :: self.dimensions + 1]
-            # take the remaining bytes
-            self.rem_data_bytes = data[n_cplt_packet * (self.data_size + self.time_size) :]
+                frames = np.frombuffer(data_t, dtype=self._frame_dtype, count=n_cplt_packet)
+                self.data_buffer = np.ascontiguousarray(frames['data']).reshape(-1)
+            else:
+                self.data_buffer = np.frombuffer(data_t, dtype=self.data_format)
+
+            # take the remaining bytes (incomplete frame after the last full packet)
+            self.rem_data_bytes = data[n_cplt_packet * packet_size :]
 
             # If rem_data_bytes includes a partial timestamp, handle it
             if len(self.rem_data_bytes) > self.data_size:
                 # Calculate residual bytes to complete the timestamp
-                self.missing_time_bytes = (self.data_size + self.time_size) - len(
-                    self.rem_data_bytes
-                )
+                self.missing_time_bytes = (self.data_size + self.time_size) - len(self.rem_data_bytes)
                 # Trim rem_data_bytes to avoid interpreting timestamp bytes as data
                 self.rem_data_bytes = self.rem_data_bytes[: self.data_size]
-                data = data[: n_cplt_packet * (self.data_size + self.time_size) + self.data_size]
+                data = data[: n_cplt_packet * packet_size + self.data_size]
 
             # calculate the right amount of data to extract
             [int_rem_data_bytes, data_samples] = self.calculate_data_to_extract(self.rem_data_bytes)
             # update the data_samples_counter
             self.data_samples_counter = int(data_samples)
-            # add remaining extracted data into the data_buffer
-            if self.sample_size == 3:
-                a = TypeConversion.int24_buffer_to_int32_buffer(
-                    data[
-                        n_cplt_packet
-                        * (self.data_size + self.time_size) : n_cplt_packet
-                        * (self.data_size + self.time_size)
-                        + int_rem_data_bytes
-                    ]
-                )
-                self.data_buffer.extend(
-                    np.frombuffer(a, dtype=self.data_format, count=self.data_samples_counter)
-                )
-            else:
-                self.data_buffer.extend(
-                    np.frombuffer(
-                        data[
-                            n_cplt_packet
-                            * (self.data_size + self.time_size) : n_cplt_packet
-                            * (self.data_size + self.time_size)
-                            + int_rem_data_bytes
-                        ],
+            # add remaining extracted data into the data_buffer (zero-copy view + concat)
+            if self.data_samples_counter > 0:
+                rem_start = n_cplt_packet * packet_size
+                if self.sample_size == 3:
+                    a = TypeConversion.int24_buffer_to_int32_buffer(data[rem_start : rem_start + int_rem_data_bytes])
+                    remainder = np.frombuffer(a, dtype=self.data_format, count=self.data_samples_counter)
+                else:
+                    remainder = np.frombuffer(
+                        data[rem_start : rem_start + int_rem_data_bytes],
                         dtype=self.data_format,
                         count=self.data_samples_counter,
                     )
-                )
-            # Cast self.data_buffer to a numpy array
-            self.data_buffer = np.array(self.data_buffer)
+                self.data_buffer = np.concatenate((self.data_buffer, remainder))
             # Take remaining bytes if data ends with an incomplete sample (x,y,), missing z)
-            self.rem_dim_bytes = data[
-                n_cplt_packet * (self.data_size + self.time_size) + int_rem_data_bytes :
-            ]
+            self.rem_dim_bytes = data[n_cplt_packet * packet_size + int_rem_data_bytes :]
             # Update data_samples_counter and timestamp flag
             self.update_data_samples_counter_and_time_flag()
 
@@ -374,14 +359,10 @@ class DataReader(object):
                     self.fill_data_buffer(data.data)
                 else:
                     # received data starts with timestamp
-                    data.data = data.data[
-                        len(self.rem_dim_bytes) + self.time_size :
-                    ]  # removing the timestamp
+                    data.data = data.data[len(self.rem_dim_bytes) + self.time_size :]  # removing the timestamp
                     if len(self.rem_dim_bytes) != 0:
                         # self.data_samples_counter += len(self.rem_dim_bytes)/self.sample_size
-                        self.fill_data_buffer(
-                            self.rem_dim_bytes + data.data
-                        )  # place residual bytes in head if any
+                        self.fill_data_buffer(self.rem_dim_bytes + data.data)  # place residual bytes in head if any
                     else:
                         self.fill_data_buffer(data.data)
             else:
@@ -389,18 +370,14 @@ class DataReader(object):
                 # data_samples_counter counts data. If multiple dim, data one dimension is one data
                 diff = (
                     self.samples_per_ts * self.dimensions
-                ) - self.data_samples_counter # number of samples to complete a full packet
-                if len(data.data) < (
-                    diff * self.sample_size
-                ):
+                ) - self.data_samples_counter  # number of samples to complete a full packet
+                if len(data.data) < (diff * self.sample_size):
                     # Raw bytes: multiply samples by sample_size to get byte count
                     # calculate the right amount of data to extract
                     [int_rem_data_bytes, data_samples] = self.calculate_data_to_extract(data.data)
                     # copy data into buffer
                     if self.sample_size == 3:
-                        a = TypeConversion.int24_buffer_to_int32_buffer(
-                            data.data[:int_rem_data_bytes]
-                        )
+                        a = TypeConversion.int24_buffer_to_int32_buffer(data.data[:int_rem_data_bytes])
                         self.data_buffer = np.frombuffer(
                             a,
                             dtype=self.data_format,
@@ -419,9 +396,7 @@ class DataReader(object):
                 else:
                     # copy data into buffer
                     if self.sample_size == 3:
-                        a = TypeConversion.int24_buffer_to_int32_buffer(
-                            data.data[: diff * self.sample_size]
-                        )
+                        a = TypeConversion.int24_buffer_to_int32_buffer(data.data[: diff * self.sample_size])
                         self.data_buffer = np.frombuffer(a, dtype=self.data_format, count=diff)
                     else:
                         self.data_buffer = np.frombuffer(
@@ -432,12 +407,10 @@ class DataReader(object):
                     if len(self.data_buffer) == (len(data.data) / self.sample_size):
                         # next received packet will start with a timestamp
                         self.next_is_timestamp = True
-                        self.rem_dim_bytes = ""
+                        self.rem_dim_bytes = ''
                     else:
                         # Remove the timestamp (excluding the first)
-                        if (len(self.data_buffer) * self.sample_size) + self.time_size > len(
-                            data.data
-                        ):
+                        if (len(self.data_buffer) * self.sample_size) + self.time_size > len(data.data):
                             # Remove partial timestamp,
                             # Remainig bytes will arrive in the next packet
                             self.missing_time_bytes = (
@@ -450,9 +423,7 @@ class DataReader(object):
                                 + (self.time_size - self.missing_time_bytes) :
                             ]
                         else:
-                            data.data = data.data[
-                                (len(self.data_buffer) * self.sample_size) + self.time_size :
-                            ]
+                            data.data = data.data[(len(self.data_buffer) * self.sample_size) + self.time_size :]
 
                         # fill data buffer
                         self.fill_data_buffer(data.data)
@@ -463,10 +434,8 @@ class DataReader(object):
                     for i in range(int(len(self.data_buffer) / self.dimensions)):
                         self.data_dict[i] = (
                             np.array(
-                                self.data_buffer[
-                                    i * self.dimensions : (i * self.dimensions) + self.dimensions
-                                ],
-                                dtype="f",
+                                self.data_buffer[i * self.dimensions : (i * self.dimensions) + self.dimensions],
+                                dtype=self.data_format if self.flat_raw_data else 'f',
                             )
                             * self.sensitivity
                         )
@@ -476,8 +445,7 @@ class DataReader(object):
                     else:
                         for i in range(self.dimensions):
                             self.data_dict[i] = (
-                                np.array(self.data_buffer[i :: self.dimensions], dtype="f")
-                                * self.sensitivity
+                                np.array(self.data_buffer[i :: self.dimensions], dtype='f') * self.sensitivity
                             )
 
                 # Add data to a plot

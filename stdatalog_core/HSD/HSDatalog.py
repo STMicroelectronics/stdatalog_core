@@ -19,24 +19,28 @@ Note: This module is intentionally large and aggregates many thin wrappers over
 the v1/v2 implementations to preserve backward compatibility.
 """
 
-import os
+# Generic
 import enum
+import math
+import os
 from warnings import warn
-import numpy as np
+
+# Custom
 import h5py
+import numpy as np
+import stdatalog_core.HSD_utils.logger as logger
 from pandas import DataFrame
 from stdatalog_core.HSD.HSDatalog_v1 import HSDatalog_v1
 from stdatalog_core.HSD.HSDatalog_v2 import HSDatalog_v2
 from stdatalog_core.HSD.model.DeviceConfig import Device
 from stdatalog_core.HSD.utils.file_manager import FileManager
 from stdatalog_core.HSD.utils.sensors_utils import SensorTypeConversion
-from stdatalog_core.HSD_utils.converters import NanoedgeCSVWriter, HSDatalogConverter
+from stdatalog_core.HSD_utils.converters import HSDatalogConverter, NanoedgeCSVWriter
 from stdatalog_core.HSD_utils.exceptions import (
     AcquisitionFormatError,
     MissingTagsException,
     NanoEdgeConversionError,
 )
-import stdatalog_core.HSD_utils.logger as logger
 from stdatalog_pnpl.DTDL.dtdl_utils import AlgorithmTypeEnum, ComponentTypeEnum, SensorCategoryEnum
 
 log = logger.get_logger(__name__)
@@ -113,7 +117,14 @@ class HSDatalog:
     # A class-level attribute that sets the default chunk size for data samples
     DEFAULT_SAMPLES_CHUNK_SIZE = 10000000
 
-    def create_hsd(self, acquisition_folder=None, device_config=None, update_catalog=True):
+    def create_hsd(
+        self,
+        acquisition_folder=None,
+        device_config=None,
+        update_catalog=True,
+        catalog_url=None,
+        dtdl_base_url=None,
+    ):
         """
         Creates an instance of the appropriate HSDatalog version based on
         the provided device configuration or the data in the acquisition
@@ -141,11 +152,13 @@ class HSDatalog:
                 hsd = HSDatalog_v1()
             # If the device configuration contains a schema version starting
             # with "2", create HSDatalog version 2
-            elif (
-                "schema_version" in device_config
-                and device_config["schema_version"].split(".")[0] == "2"
-            ):
-                hsd = HSDatalog_v2(update_catalog=update_catalog)
+            elif 'schema_version' in device_config and device_config['schema_version'].split('.')[0] == '2':
+                kwargs = {'update_catalog': update_catalog}
+                if catalog_url is not None:
+                    kwargs['catalog_url'] = catalog_url
+                if dtdl_base_url is not None:
+                    kwargs['dtdl_base_url'] = dtdl_base_url
+                hsd = HSDatalog_v2(**kwargs)
             # Return the created HSDatalog instance
             return hsd
 
@@ -163,10 +176,15 @@ class HSDatalog:
         # version 2 using the acquisition folder
         if self.is_datalog2:
             try:
-                hsd = HSDatalog_v2(self.acquisition_folder)
+                kwargs = {'acquisition_folder': self.acquisition_folder, 'update_catalog': update_catalog}
+                if catalog_url is not None:
+                    kwargs['catalog_url'] = catalog_url
+                if dtdl_base_url is not None:
+                    kwargs['dtdl_base_url'] = dtdl_base_url
+                hsd = HSDatalog_v2(**kwargs)
             except Exception as e:
                 # If an exception occurs, log a warning and return None
-                log.warning(f"Failed to create HSDatalog_v2 instance: {e}")
+                log.warning(f'Failed to create HSDatalog_v2 instance: {e}')
                 return None
         # Return the created HSDatalog instance
         return hsd
@@ -183,26 +201,20 @@ class HSDatalog:
             the acquisition folder.
         """
         if not os.path.exists(acquisition_folder):
-            log.error(f"Invalid acquisition folder path: {acquisition_folder}. Check formatting.")
+            log.error(f'Invalid acquisition folder path: {acquisition_folder}. Check formatting.')
             return HSDatalog.HSDVersion.INVALID
         # If an acquisition folder is provided, proceed with initialization.
         if acquisition_folder is not None:
             # Attempt to find and load the device configuration from the acquisition folder.
-            device_json_file_path = FileManager.find_file("device_config.json", acquisition_folder)
+            device_json_file_path = FileManager.find_file('device_config.json', acquisition_folder)
             if device_json_file_path is None:
-                device_json_file_path = FileManager.find_file(
-                    "DeviceConfig.json", acquisition_folder
-                )
+                device_json_file_path = FileManager.find_file('DeviceConfig.json', acquisition_folder)
                 if device_json_file_path is not None:
-                    acquisition_json_file_path = FileManager.find_file(
-                        "AcquisitionInfo.json", acquisition_folder
-                    )
+                    acquisition_json_file_path = FileManager.find_file('AcquisitionInfo.json', acquisition_folder)
                     if acquisition_json_file_path is not None:
                         return HSDatalog.HSDVersion.V1
             else:
-                acquisition_json_file_path = FileManager.find_file(
-                    "acquisition_info.json", acquisition_folder
-                )
+                acquisition_json_file_path = FileManager.find_file('acquisition_info.json', acquisition_folder)
                 if acquisition_json_file_path is not None:
                     return HSDatalog.HSDVersion.V2
         return HSDatalog.HSDVersion.INVALID
@@ -551,7 +563,7 @@ class HSDatalog:
         return component
 
     @staticmethod
-    def get_sensor_list(hsd, type_filter="", only_active=False):
+    def get_sensor_list(hsd, type_filter='', only_active=False):
         """
         Retrieves a list of sensors from the HSDatalog instance, with
         optional filtering by type and activity status.
@@ -612,7 +624,7 @@ class HSDatalog:
         # Retrieve the sensor name using the 'get_sensor_name' method.
         s_name = HSDatalog.get_sensor_name(hsd, sensor)
         # Access the sensor's sensitivity using the sensor name as the key.
-        return sensor[s_name].get("sensitivity", 1)
+        return sensor[s_name].get('sensitivity', 1)
 
     @staticmethod
     def get_sensor_sensitivity_by_name(hsd, sensor_name):
@@ -643,7 +655,7 @@ class HSDatalog:
         # Retrieve the sensor name using the 'get_sensor_name' method.
         s_name = HSDatalog.get_sensor_name(hsd, sensor)
         # Access the sensor's ODR using the sensor name as the key.
-        return sensor[s_name].get("odr")
+        return sensor[s_name].get('odr')
 
     @staticmethod
     def get_sensor_odr_by_name(hsd, sensor_name):
@@ -676,7 +688,7 @@ class HSDatalog:
         # Retrieve the sensor name using the 'get_sensor_name' method.
         s_name = HSDatalog.get_sensor_name(hsd, sensor)
         # Access the sensor's measured ODR using the sensor name as the key.
-        return sensor[s_name].get("measodr")
+        return sensor[s_name].get('measodr')
 
     @staticmethod
     def get_sensor_measodr_by_name(hsd, sensor_name):
@@ -710,7 +722,7 @@ class HSDatalog:
         # Retrieve the sensor name using the 'get_sensor_name' method.
         s_name = HSDatalog.get_sensor_name(hsd, sensor)
         # Access the sensor's FS using the sensor name as the key.
-        return sensor[s_name].get("fs")
+        return sensor[s_name].get('fs')
 
     @staticmethod
     def get_sensor_fs_by_name(hsd, sensor_name):
@@ -744,13 +756,13 @@ class HSDatalog:
         # Retrieve the sensor name using the 'get_sensor_name' method.
         s_name = HSDatalog.get_sensor_name(hsd, sensor)
         # Access the sensor's SPTS using the sensor name as the key.
-        spts = sensor[s_name].get("samples_per_ts")
+        spts = sensor[s_name].get('samples_per_ts')
         # Check if the SPTS is an integer or a dictionary.
         if isinstance(spts, int):
             return spts
         else:
             # If multiple SPTS values are found, return the list of SPTS.
-            return spts.get("val")
+            return spts.get('val')
 
     @staticmethod
     def get_sensor_spts_by_name(hsd, sensor_name):
@@ -855,13 +867,13 @@ class HSDatalog:
             status.
         """
         # Set the initial offset value in the component status.
-        comp_status["ioffset"] = ioffset
+        comp_status['ioffset'] = ioffset
         # Remove keys related to conversion side information if they exist.
-        comp_status.pop("missing_bytes", None)
-        comp_status.pop("saved_bytes", None)
-        comp_status.pop("last_index", None)
-        comp_status.pop("is_first_chunk", None)
-        comp_status.pop("prev_data_byte_counter", None)
+        comp_status.pop('missing_bytes', None)
+        comp_status.pop('saved_bytes', None)
+        comp_status.pop('last_index', None)
+        comp_status.pop('is_first_chunk', None)
+        comp_status.pop('prev_data_byte_counter', None)
 
     @staticmethod
     def __compute_chunk_time_size(chunk_size: int, comp_status: dict) -> float:
@@ -879,34 +891,34 @@ class HSDatalog:
         """
         # Retrieve the output data rate (odr) from the component status,
         # defaulting to 1 if not present.
-        odr = comp_status.get("measodr")
+        odr = comp_status.get('measodr')
         if odr is None or odr == 0:
-            odr = comp_status.get("odr", 1)
+            odr = comp_status.get('odr', 1)
         # Calculate the time duration of each chunk based on the chunk size and odr.
         return chunk_size / odr  # seconds
 
     @staticmethod
     def _get_measodr(c_status):
         # Set sensor attributes based on sensor category
-        s_category = c_status.get("sensor_category")
+        s_category = c_status.get('sensor_category')
         if s_category == SensorCategoryEnum.ISENSOR_CLASS_MEMS.value:
-            return c_status.get("measodr", c_status.get("odr"))
+            return c_status.get('measodr', c_status.get('odr'))
         elif (
             s_category == SensorCategoryEnum.ISENSOR_CLASS_AUDIO.value
             or s_category == SensorCategoryEnum.ISENSOR_CLASS_RANGING.value
             or s_category == SensorCategoryEnum.ISENSOR_CLASS_PRESENCE.value
         ):
-            return c_status.get("odr")
+            return c_status.get('odr')
         elif s_category == SensorCategoryEnum.ISENSOR_CLASS_LIGHT.value:
             return (
-                1 / (c_status.get("intermeasurement_time") / 1000)
-                if c_status.get("intermeasurement_time") > c_status.get("exposure_time") / 1000 + 6
-                else (1 / ((c_status.get("exposure_time") / 1000 + 6) / 1000))
+                1 / (c_status.get('intermeasurement_time') / 1000)
+                if c_status.get('intermeasurement_time') > c_status.get('exposure_time') / 1000 + 6
+                else (1 / ((c_status.get('exposure_time') / 1000 + 6) / 1000))
             )
         elif s_category == SensorCategoryEnum.ISENSOR_CLASS_CAMERA:
             return None
         elif s_category == SensorCategoryEnum.ISENSOR_CLASS_POWERMETER.value:
-            return 1 / (c_status.get("adc_conversion_time") / 1000000)
+            return 1 / (c_status.get('adc_conversion_time') / 1000000)
         else:
             return None
 
@@ -931,18 +943,17 @@ class HSDatalog:
         value_changed = df[column_name].ne(df[column_name].shift(1))
 
         # Check if 'Time' or 'Time[s]' are columns of df and use the one that is present
-        time_column = "Time" if "Time" in df.columns else "Time[s]"
+        time_column = 'Time' if 'Time' in df.columns else 'Time[s]'
 
         # Calculate the time difference between consecutive rows.
         time_diff = df[time_column].diff().fillna(0)
 
         if max_time_gap is None:
-
             # Create the grou key based on the value changed
             group_key = value_changed.cumsum()
 
             # Add the group key to the DataFrame.
-            df[f"{column_name}_group_key"] = group_key
+            df[f'{column_name}_group_key'] = group_key
         else:
             # Determine if the time gap exceeds the maximum allowed gap.
             gap_exceeded = time_diff > max_time_gap
@@ -951,7 +962,7 @@ class HSDatalog:
             group_key = (value_changed | gap_exceeded).cumsum()
 
             # Add the group key to the DataFrame.
-            df[f"{column_name}_group_key"] = group_key
+            df[f'{column_name}_group_key'] = group_key
 
         return df
 
@@ -965,7 +976,7 @@ class HSDatalog:
         output_folder: str,
         out_format: str,
         with_times: bool,
-        columns_labels="default",
+        columns_labels='default',
     ) -> None:
         """
         Save a group of tagged data to a file, creating a new file or
@@ -993,38 +1004,34 @@ class HSDatalog:
         tag_batch_last_time = group_df.iloc[-1, 0]
         tag_batch_sample_time = (tag_batch_last_time - tag_batch_first_time) / len(group_df)
 
-        if tag_info[tag_label]["last_timestamp"] != 0:
-            exp_next_time = round(
-                (tag_info[tag_label]["last_timestamp"] + tag_batch_sample_time), 6
-            )
+        if tag_info[tag_label]['last_timestamp'] != 0:
+            exp_next_time = round((tag_info[tag_label]['last_timestamp'] + tag_batch_sample_time), 6)
 
             if (
                 tag_batch_first_time > exp_next_time + 0.5
             ):  # next tag group --> new file (with 0.5 seconds of tolerance)
-                tag_info[tag_label]["tag_group_id"] += 1
-                tag_info[tag_label]["first_chunk"] = True
+                tag_info[tag_label]['tag_group_id'] += 1
+                tag_info[tag_label]['first_chunk'] = True
 
-        tag_info[tag_label]["last_timestamp"] = tag_batch_last_time
+        tag_info[tag_label]['last_timestamp'] = tag_batch_last_time
 
         # Drop tag columns and group key columns
-        group_df = group_df.drop([f"{label}" for label in tags_columns], axis=1)
-        group_df = group_df.drop([f"{label}_group_key" for label in tags_columns], axis=1)
+        group_df = group_df.drop([f'{label}' for label in tags_columns], axis=1)
+        group_df = group_df.drop([f'{label}_group_key' for label in tags_columns], axis=1)
 
         # File handling
         tag_sub_folder = os.path.join(output_folder, tag_label)
         os.makedirs(tag_sub_folder, exist_ok=True)
-        label_file_name = f"{tag_label}_{comp_name}_dataLog_{tag_info[tag_label]['tag_group_id']}"
+        label_file_name = f'{tag_label}_{comp_name}_dataLog_{tag_info[tag_label]["tag_group_id"]}'
         label_file_path = os.path.join(tag_sub_folder, label_file_name)
 
         # Determine the file mode ('write' for the first chunk, 'append' for
         # subsequent chunks).
-        file_mode = "w" if tag_info[tag_label]["first_chunk"] else "a"
-        tag_info[tag_label]["first_chunk"] = False
+        file_mode = 'w' if tag_info[tag_label]['first_chunk'] else 'a'
+        tag_info[tag_label]['first_chunk'] = False
 
         # Save the group DataFrame
-        HSDatalogConverter.to_unico(
-            label_file_path, group_df, out_format, file_mode, with_times, columns_labels
-        )
+        HSDatalogConverter.to_unico(label_file_path, group_df, out_format, file_mode, with_times, columns_labels)
 
     @staticmethod
     def get_time_tags(hsd, which_tags=None):
@@ -1093,11 +1100,11 @@ class HSDatalog:
             # other appropriate action.
             print(
                 (
-                    f"MemoryError encountered while retrieving data and timestamps for component "
-                    f"{c_name}. "
-                    "Try to extract data and timestamps in batches by calling this function "
-                    "on smaller subsequent time intervals, varying the start_time and end_time "
-                    f"parameters.: {e}"
+                    f'MemoryError encountered while retrieving data and timestamps for component '
+                    f'{c_name}. '
+                    'Try to extract data and timestamps in batches by calling this function '
+                    'on smaller subsequent time intervals, varying the start_time and end_time '
+                    f'parameters.: {e}'
                 )
             )
             raise
@@ -1150,11 +1157,11 @@ class HSDatalog:
             # other appropriate action.
             print(
                 (
-                    f"MemoryError encountered while retrieving data and timestamps for component "
-                    f"{c_name}. "
-                    "Try to extract data and timestamps in batches by calling this function "
-                    "on smaller subsequent time intervals, varying the start_time and end_time "
-                    f"parameters.: {e}"
+                    f'MemoryError encountered while retrieving data and timestamps for component '
+                    f'{c_name}. '
+                    'Try to extract data and timestamps in batches by calling this function '
+                    'on smaller subsequent time intervals, varying the start_time and end_time '
+                    f'parameters.: {e}'
                 )
             )
             raise
@@ -1190,9 +1197,7 @@ class HSDatalog:
         # Retrieve data and timestamps in batches using the HSDatalog
         # 'get_data_and_timestamps' method.
         # The method will handle the specified time range, data type, and chunk size.
-        return HSDatalog.get_data_and_timestamps(
-            hsd, component, start_time, end_time, raw_data, chunk_size
-        )
+        return HSDatalog.get_data_and_timestamps(hsd, component, start_time, end_time, raw_data, chunk_size)
 
     @staticmethod
     def get_data_and_timestamps_by_name_gen(
@@ -1225,9 +1230,7 @@ class HSDatalog:
         # Retrieve data and timestamps in batches using the HSDatalog
         # 'get_data_and_timestamp_gen' method.
         # The method will handle the specified time range, data type, and chunk size.
-        return HSDatalog.get_data_and_timestamp_gen(
-            hsd, component, start_time, end_time, raw_data, chunk_size
-        )
+        return HSDatalog.get_data_and_timestamp_gen(hsd, component, start_time, end_time, raw_data, chunk_size)
 
     @staticmethod
     def __get_data_and_timestamps_batch(
@@ -1268,18 +1271,18 @@ class HSDatalog:
         # Set the initial time offset to the start time or 0 if not provided.
         time_offset = start_time or 0
 
-        log.info(f"--> {comp_name} Data and Timestamps extraction started...")
+        log.info(f'--> {comp_name} Data and Timestamps extraction started...')
 
         # Initialize an empty list to store data and timestamps for each batch.
         d_and_t = []
 
         # Retrieve the initial offset from the component status or use 0 if not provided.
-        ioffset = comp_status.get("ioffset", 0)
+        ioffset = comp_status.get('ioffset', 0)
         # Set the start and end times for the first batch.
         next_start_time = time_offset
         next_end_time = time_offset + chunk_time_size
         # Mark the first batch.
-        comp_status["is_first_chunk"] = True
+        comp_status['is_first_chunk'] = True
         while not is_last_chunk:
             # Adjust the chunk size if the end time is specified and the current chunk exceeds it.
             if end_time != -1 and next_end_time > end_time:
@@ -1292,26 +1295,25 @@ class HSDatalog:
             )
 
             # After the first chunk, update the status to no longer be the first chunk.
-            if comp_status["is_first_chunk"]:
-                comp_status["is_first_chunk"] = False
+            if comp_status['is_first_chunk']:
+                comp_status['is_first_chunk'] = False
 
             # NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
-            if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value or (
-                comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value
-                and "odr" not in comp_status
+            if comp_status['c_type'] == ComponentTypeEnum.ALGORITHM.value or (
+                comp_status['c_type'] == ComponentTypeEnum.ACTUATOR.value and 'odr' not in comp_status
             ):
                 is_last_chunk = True
-                log.info("--> Conversion completed")
+                log.info('--> Conversion completed')
 
             if data_time is not None:
                 # Check if the retrieved data is empty.
                 if len(data_time[0]) == 0:
                     # If the dataframe is empty, mark the last chunk and log completion.
                     is_last_chunk = True
-                    log.info(f"--> {comp_name} Data and Timestamps extraction completed")
+                    log.info(f'--> {comp_name} Data and Timestamps extraction completed')
                 else:
                     # Log the completion of the current chunk and append the dataframe to the list.
-                    log.info(f"--> {comp_name} Data and Timestamps Chunk extraction completed")
+                    log.info(f'--> {comp_name} Data and Timestamps Chunk extraction completed')
                     d_and_t.append(data_time)
                     # Update the start time for the next chunk to the timestamp
                     # of the last sample in the current chunk.
@@ -1321,7 +1323,7 @@ class HSDatalog:
             else:
                 # If no data is returned, mark the last chunk and log completion.
                 is_last_chunk = True
-                log.info(f"--> {comp_name} Data and Timestamps extraction completed")
+                log.info(f'--> {comp_name} Data and Timestamps extraction completed')
 
         # Reset the status conversion side information for the component status.
         HSDatalog.reset_status_conversion_side_info(comp_status, ioffset)
@@ -1367,15 +1369,15 @@ class HSDatalog:
         # Set the initial time offset to the start time or 0 if not provided.
         time_offset = start_time or 0
 
-        log.info(f"--> {comp_name} Data and Timestamps extraction started...")
+        log.info(f'--> {comp_name} Data and Timestamps extraction started...')
 
         # Retrieve the initial offset from the component status or use 0 if not provided.
-        ioffset = comp_status.get("ioffset", 0)
+        ioffset = comp_status.get('ioffset', 0)
         # Set the start and end times for the first batch.
         next_start_time = time_offset
         next_end_time = time_offset + chunk_time_size
         # Mark the first batch.
-        comp_status["is_first_chunk"] = True
+        comp_status['is_first_chunk'] = True
         while not is_last_chunk:
             # Adjust the chunk size if the end time is specified and the current chunk exceeds it.
             if end_time != -1 and next_end_time > end_time:
@@ -1389,8 +1391,8 @@ class HSDatalog:
             )
 
             # After the first chunk, update the status to no longer be the first chunk.
-            if comp_status["is_first_chunk"]:
-                comp_status["is_first_chunk"] = False
+            if comp_status['is_first_chunk']:
+                comp_status['is_first_chunk'] = False
 
             if start_time == next_start_time:
                 # Trim the data_time if specific start_time is selected
@@ -1404,26 +1406,25 @@ class HSDatalog:
                     data_time = (data_time[0][:index], data_time[1][:index])
 
             # After the first chunk, update the status to no longer be the first chunk.
-            if comp_status["is_first_chunk"]:
-                comp_status["is_first_chunk"] = False
+            if comp_status['is_first_chunk']:
+                comp_status['is_first_chunk'] = False
 
             # NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
-            if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value or (
-                comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value
-                and "odr" not in comp_status
+            if comp_status['c_type'] == ComponentTypeEnum.ALGORITHM.value or (
+                comp_status['c_type'] == ComponentTypeEnum.ACTUATOR.value and 'odr' not in comp_status
             ):
                 is_last_chunk = True
-                log.info("--> Conversion completed")
+                log.info('--> Conversion completed')
 
             if data_time is not None:
                 # Check if the retrieved data is empty.
                 if len(data_time[0]) == 0:
                     # If the dataframe is empty, mark the last chunk and log completion.
                     is_last_chunk = True
-                    log.info(f"--> {comp_name} Data and Timestamps extraction completed")
+                    log.info(f'--> {comp_name} Data and Timestamps extraction completed')
                 else:
                     # Log the completion of the current chunk and append the dataframe to the list.
-                    log.info(f"--> {comp_name} Data and Timestamps Chunk extraction completed")
+                    log.info(f'--> {comp_name} Data and Timestamps Chunk extraction completed')
                     yield data_time
                     # Update the start time for the next chunk to the timestamp
                     # of the last sample in the current chunk.
@@ -1433,7 +1434,7 @@ class HSDatalog:
             else:
                 # If no data is returned, mark the last chunk and log completion.
                 is_last_chunk = True
-                log.info(f"--> {comp_name} Data and Timestamps extraction completed")
+                log.info(f'--> {comp_name} Data and Timestamps extraction completed')
 
         # Reset the status conversion side information for the component status.
         HSDatalog.reset_status_conversion_side_info(comp_status, ioffset)
@@ -1500,11 +1501,11 @@ class HSDatalog:
             # other appropriate action.
             print(
                 (
-                    f"MemoryError encountered while retrieving dataframes for component "
-                    f"{c_name}. "
-                    "Try to extract dataframes in batches by calling this function "
-                    "on smaller subsequent time intervals, varying the start_time and "
-                    f"end_time parameters.: {e}"
+                    f'MemoryError encountered while retrieving dataframes for component '
+                    f'{c_name}. '
+                    'Try to extract dataframes in batches by calling this function '
+                    'on smaller subsequent time intervals, varying the start_time and '
+                    f'end_time parameters.: {e}'
                 )
             )
             raise
@@ -1573,11 +1574,11 @@ class HSDatalog:
             # other appropriate action.
             print(
                 (
-                    f"MemoryError encountered while retrieving dataframes for component "
-                    f"{c_name}. "
-                    "Try to extract dataframes in batches by calling this function "
-                    "on smaller subsequent time intervals, varying the start_time and "
-                    f"end_time parameters.: {e}"
+                    f'MemoryError encountered while retrieving dataframes for component '
+                    f'{c_name}. '
+                    'Try to extract dataframes in batches by calling this function '
+                    'on smaller subsequent time intervals, varying the start_time and '
+                    f'end_time parameters.: {e}'
                 )
             )
             raise
@@ -1626,15 +1627,15 @@ class HSDatalog:
         # Set the initial time offset to the start time or 0 if not provided.
         time_offset = start_time or 0
 
-        log.info(f"--> {comp_name} Conversion started...")
+        log.info(f'--> {comp_name} Conversion started...')
 
         # Initialize an empty list to store dataframes.
         dataframes = []
 
-        ioffset = comp_status.get("ioffset", 0)
+        ioffset = comp_status.get('ioffset', 0)
         next_start_time = time_offset
         next_end_time = time_offset + chunk_time_size
-        comp_status["is_first_chunk"] = True
+        comp_status['is_first_chunk'] = True
         while not is_last_chunk:
             # Adjust the chunk size if the end time is specified and the current chunk exceeds it.
             if end_time != -1 and next_end_time > end_time:
@@ -1656,27 +1657,26 @@ class HSDatalog:
             if start_time == next_start_time:
                 if dataframe is not None:
                     # Find the index of the row with the nearest timestamp to next_start_time
-                    index = HSDatalog.find_nearest_idx(dataframe["Time"].values, next_start_time)
+                    index = HSDatalog.find_nearest_idx(dataframe['Time'].values, next_start_time)
                     # Trim the DataFrame if specific start_time is selected
                     dataframe = dataframe.iloc[index:]
 
             if end_time == next_end_time:
                 if dataframe is not None:
                     # Trim the DataFrame if specific end_time is selected
-                    index = HSDatalog.find_nearest_idx(dataframe["Time"].values, next_end_time)
+                    index = HSDatalog.find_nearest_idx(dataframe['Time'].values, next_end_time)
                     dataframe = dataframe.iloc[:index]
 
             # After the first chunk, update the status to no longer be the first chunk.
-            if comp_status["is_first_chunk"]:
-                comp_status["is_first_chunk"] = False
+            if comp_status['is_first_chunk']:
+                comp_status['is_first_chunk'] = False
 
             # NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
-            if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value or (
-                comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value
-                and "odr" not in comp_status
+            if comp_status['c_type'] == ComponentTypeEnum.ALGORITHM.value or (
+                comp_status['c_type'] == ComponentTypeEnum.ACTUATOR.value and 'odr' not in comp_status
             ):
                 is_last_chunk = True
-                log.info("--> Conversion completed")
+                log.info('--> Conversion completed')
 
             if dataframe is not None:
                 # Print the dataframe for debugging purposes (optional).
@@ -1684,11 +1684,11 @@ class HSDatalog:
                 if len(dataframe) == 0:
                     # If the dataframe is empty, mark the last chunk and log completion.
                     is_last_chunk = True
-                    log.info(f"--> {comp_name} Conversion completed")
+                    log.info(f'--> {comp_name} Conversion completed')
                     print()
                 else:
                     # Log the completion of the current chunk and append the dataframe to the list.
-                    log.info(f"--> {comp_name} Chunk Conversion completed")
+                    log.info(f'--> {comp_name} Chunk Conversion completed')
                     dataframes.append(dataframe)
                     # Increment the time offset for the next chunk.
                     next_start_time = dataframe.iloc[-1, 0]
@@ -1696,16 +1696,16 @@ class HSDatalog:
             else:
                 # If no dataframe is returned, mark the last chunk.
                 is_last_chunk = True
-                log.info(f"--> {comp_name} Conversion completed")
+                log.info(f'--> {comp_name} Conversion completed')
 
         # Reset the status conversion side information for the component status.
         HSDatalog.reset_status_conversion_side_info(comp_status, ioffset)
 
         # Drop the 'Time' column for FFT algorithms.
-        if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value:
-            algorithm_type = comp_status.get("algorithm_type")
+        if comp_status['c_type'] == ComponentTypeEnum.ALGORITHM.value:
+            algorithm_type = comp_status.get('algorithm_type')
             if algorithm_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
-                dataframes[0] = dataframes[0].drop(columns=["Time"])
+                dataframes[0] = dataframes[0].drop(columns=['Time'])
 
         # Return the list of dataframes.
         return dataframes
@@ -1755,12 +1755,12 @@ class HSDatalog:
         # Set the initial time offset to the start time or 0 if not provided.
         time_offset = start_time or 0
 
-        log.info(f"--> {comp_name} Conversion started...")
+        log.info(f'--> {comp_name} Conversion started...')
 
-        ioffset = comp_status.get("ioffset", 0)
+        ioffset = comp_status.get('ioffset', 0)
         next_start_time = time_offset
         next_end_time = time_offset + chunk_time_size
-        comp_status["is_first_chunk"] = True
+        comp_status['is_first_chunk'] = True
         while not is_last_chunk:
             # Adjust the chunk size if the end time is specified and the current chunk exceeds it.
             if end_time != -1 and next_end_time > end_time:
@@ -1782,27 +1782,26 @@ class HSDatalog:
             if start_time == next_start_time:
                 if dataframe is not None:
                     # Find the index of the row with the nearest timestamp to next_start_time
-                    index = HSDatalog.find_nearest_idx(dataframe["Time"].values, next_start_time)
+                    index = HSDatalog.find_nearest_idx(dataframe['Time'].values, next_start_time)
                     # Trim the DataFrame if specific start_time is selected
                     dataframe = dataframe.iloc[index:]
 
             if end_time == next_end_time:
                 if dataframe is not None:
                     # Trim the DataFrame if specific end_time is selected
-                    index = HSDatalog.find_nearest_idx(dataframe["Time"].values, next_end_time)
+                    index = HSDatalog.find_nearest_idx(dataframe['Time'].values, next_end_time)
                     dataframe = dataframe.iloc[:index]
 
             # After the first chunk, update the status to no longer be the first chunk.
-            if comp_status["is_first_chunk"]:
-                comp_status["is_first_chunk"] = False
+            if comp_status['is_first_chunk']:
+                comp_status['is_first_chunk'] = False
 
             # NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
-            if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value or (
-                comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value
-                and "odr" not in comp_status
+            if comp_status['c_type'] == ComponentTypeEnum.ALGORITHM.value or (
+                comp_status['c_type'] == ComponentTypeEnum.ACTUATOR.value and 'odr' not in comp_status
             ):
                 is_last_chunk = True
-                log.info("--> Conversion completed")
+                log.info('--> Conversion completed')
 
             if dataframe is not None:
                 # Print the dataframe for debugging purposes (optional).
@@ -1810,11 +1809,11 @@ class HSDatalog:
                 if len(dataframe) == 0:
                     # If the dataframe is empty, mark the last chunk and log completion.
                     is_last_chunk = True
-                    log.info(f"--> {comp_name} Conversion completed")
+                    log.info(f'--> {comp_name} Conversion completed')
                     print()
                 else:
                     # Log the completion of the current chunk and append the dataframe to the list.
-                    log.info(f"--> {comp_name} Chunk Conversion completed")
+                    log.info(f'--> {comp_name} Chunk Conversion completed')
                     # Yield dataframe for generator
                     yield dataframe
                     # Increment the time offset for the next chunk.
@@ -1823,21 +1822,19 @@ class HSDatalog:
             else:
                 # If no dataframe is returned, mark the last chunk.
                 is_last_chunk = True
-                log.info(f"--> {comp_name} Conversion completed")
+                log.info(f'--> {comp_name} Conversion completed')
 
         # Reset the status conversion side information for the component status.
         HSDatalog.reset_status_conversion_side_info(comp_status, ioffset)
 
         # Drop the 'Time' column for FFT algorithms.
-        if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value:
-            algorithm_type = comp_status.get("algorithm_type")
+        if comp_status['c_type'] == ComponentTypeEnum.ALGORITHM.value:
+            algorithm_type = comp_status.get('algorithm_type')
             if algorithm_type == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
-                dataframe = dataframe.drop(columns=["Time"])  # Drop the 'Time' column
+                dataframe = dataframe.drop(columns=['Time'])  # Drop the 'Time' column
 
     @staticmethod
-    def __check_data_batch(
-        hsd, comp_name, comp_status, start_time, end_time, chunk_size=DEFAULT_SAMPLES_CHUNK_SIZE
-    ):
+    def __check_data_batch(hsd, comp_name, comp_status, start_time, end_time, chunk_size=DEFAULT_SAMPLES_CHUNK_SIZE):
         """
         Checks data for continuity and integrity in batches within a
         specified time range.
@@ -1867,11 +1864,11 @@ class HSDatalog:
         chunk_with_errors = 0
         last_data = 0
 
-        log.info(f"--> {comp_name} DUMMY Data check started...")
+        log.info(f'--> {comp_name} DUMMY Data check started...')
         next_start_time = time_offset
         next_end_time = time_offset + chunk_time_size
         # Mark the first chunk to handle any initial conditions.
-        comp_status["is_first_chunk"] = True
+        comp_status['is_first_chunk'] = True
         while not is_last_chunk:
             # Adjust the chunk size if the end time is specified and the current chunk exceeds it.
             if end_time != -1 and next_end_time > end_time:
@@ -1879,13 +1876,11 @@ class HSDatalog:
                 next_end_time = end_time
 
             # Retrieve data and timestamps for the current chunk.
-            res = hsd.get_data_and_timestamps_batch(
-                comp_name, comp_status, next_start_time, next_end_time, True
-            )
+            res = hsd.get_data_and_timestamps_batch(comp_name, comp_status, next_start_time, next_end_time, True)
 
             # After the first chunk, update the status to no longer be the first chunk.
-            if comp_status["is_first_chunk"]:
-                comp_status["is_first_chunk"] = False
+            if comp_status['is_first_chunk']:
+                comp_status['is_first_chunk'] = False
 
             if res is not None:
                 data = res[0]
@@ -1907,9 +1902,7 @@ class HSDatalog:
                 # -32768 (int16 wrap around)
                 if not is_first_chunk:
                     expected_next_value = (
-                        last_data + 1
-                        if last_data != np.iinfo(np.int16).max
-                        else np.iinfo(np.int16).min
+                        last_data + 1 if last_data != np.iinfo(np.int16).max else np.iinfo(np.int16).min
                     )
                     if data[0] != expected_next_value:
                         chunk_with_errors += 1
@@ -1934,19 +1927,17 @@ class HSDatalog:
 
         # Log the results of the data check.
         if chunk_with_errors == 0:
-            log.info("### OK ###")
+            log.info('### OK ###')
         else:
-            log.error("### ERRORS FOUND ###")
-        log.info(f"--> {comp_name} Data check completed.")
-        comp_status.pop("missing_bytes", None)
-        comp_status.pop("saved_bytes", None)
-        comp_status.pop("last_index", None)
-        print("")
+            log.error('### ERRORS FOUND ###')
+        log.info(f'--> {comp_name} Data check completed.')
+        comp_status.pop('missing_bytes', None)
+        comp_status.pop('saved_bytes', None)
+        comp_status.pop('last_index', None)
+        print('')
 
     @staticmethod
-    def check_dummy_data(
-        hsd, component, start_time, end_time, chunk_size=DEFAULT_SAMPLES_CHUNK_SIZE
-    ):
+    def check_dummy_data(hsd, component, start_time, end_time, chunk_size=DEFAULT_SAMPLES_CHUNK_SIZE):
         """
         Checks the dummy data for a given component within a specified time
         range.
@@ -2032,24 +2023,24 @@ class HSDatalog:
         # Set the initial time offset to the start time or 0 if not provided.
         time_offset = start_time or 0
 
-        log.info(f"--> {comp_name} Conversion started...")
-        ioffset = comp_status.get("ioffset", 0)
+        log.info(f'--> {comp_name} Conversion started...')
+        ioffset = comp_status.get('ioffset', 0)
         next_start_time = time_offset
         next_end_time = time_offset + chunk_time_size
         # Mark the first chunk to handle any initial conditions.
-        comp_status["is_first_chunk"] = True
-        if file_format == "PARQUET":
+        comp_status['is_first_chunk'] = True
+        if file_format == 'PARQUET':
             chunk_idx = 0
             parquet_chunk_paths = []
             first = True
-            output_parquet_file = sensor_file_path + ".parquet"
+            output_parquet_file = sensor_file_path + '.parquet'
         while not is_last_chunk:
             # Adjust the chunk size if the end time is specified and the current chunk exceeds it.
             if end_time != -1 and next_end_time > end_time:
                 # read exactly the missing samples up to end_time
                 next_end_time = end_time
 
-            log.debug("extracting df...")
+            log.debug('extracting df...')
             # Retrieve the data frame for the current chunk.
             df = hsd.get_dataframe_batch(
                 comp_name,
@@ -2064,70 +2055,66 @@ class HSDatalog:
             if df is not None:
                 if start_time == next_start_time:
                     # Find the index of the row with the nearest timestamp to next_start_time
-                    index = HSDatalog.find_nearest_idx(df["Time"].values, next_start_time)
+                    index = HSDatalog.find_nearest_idx(df['Time'].values, next_start_time)
                     # Trim the DataFrame if specific start_time is selected
                     df = df.iloc[index:]
 
                 if end_time == next_end_time:
                     if df is not None:
                         # Trim the DataFrame if specific end_time is selected
-                        index = HSDatalog.find_nearest_idx(df["Time"].values, next_end_time)
+                        index = HSDatalog.find_nearest_idx(df['Time'].values, next_end_time)
                         df = df.iloc[:index]
 
                 # After the first chunk, update the status to no longer be the first chunk.
-                if comp_status["is_first_chunk"]:
-                    comp_status["is_first_chunk"] = False
+                if comp_status['is_first_chunk']:
+                    comp_status['is_first_chunk'] = False
 
-                log.debug("df extracted")
+                log.debug('df extracted')
                 # NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
-                if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value or (
-                    comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value
-                    and "odr" not in comp_status
+                if comp_status['c_type'] == ComponentTypeEnum.ALGORITHM.value or (
+                    comp_status['c_type'] == ComponentTypeEnum.ACTUATOR.value and 'odr' not in comp_status
                 ):
-                    if (
-                        comp_status.get("algorithm_type")
-                        == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value
-                    ):
+                    if comp_status.get('algorithm_type') == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
                         no_timestamps = True
                     is_last_chunk = True
-                    log.info("--> Conversion completed")
+                    log.info('--> Conversion completed')
 
                 if df is not None and len(df) > 0:
                     # Check if this is the last chunk based on the end time and
                     # the last timestamp in the dataframe.
                     if end_time != -1 and df.iloc[-1, 0] >= end_time:
                         is_last_chunk = True
-                        log.info("--> Conversion completed")
+                        log.info('--> Conversion completed')
                     # If timestamps should not be included, drop the 'Time'
                     # column from the dataframe.
                     if no_timestamps:
-                        df.drop("Time", axis=1, inplace=True)
+                        df.drop('Time', axis=1, inplace=True)
                     # Determine the file mode ('write' for the first chunk,
                     # 'append' for subsequent chunks).
-                    file_mode = "w" if next_start_time == (start_time or 0) else "a"
-                    log.debug(f"df to {file_format} STARTED...")
+                    file_mode = 'w' if next_start_time == (start_time or 0) else 'a'
+                    log.debug(f'df to {file_format} STARTED...')
                     # Convert the data frame to the specified file format and
                     # save it to the file path.
-                    if file_format == "TXT":
+                    if file_format == 'TXT':
                         HSDatalogConverter.to_txt(df, sensor_file_path, mode=file_mode)
-                    elif file_format == "CSV":
+                    elif file_format == 'CSV':
                         HSDatalogConverter.to_csv(df, sensor_file_path, mode=file_mode)
-                    elif file_format == "TSV":
+                    elif file_format == 'TSV':
                         HSDatalogConverter.to_tsv(df, sensor_file_path, mode=file_mode)
-                    elif file_format == "PARQUET":
-                        chunk_file = f"{sensor_file_path}_chunk{chunk_idx}.parquet"
+                    elif file_format == 'PARQUET':
+                        chunk_file = f'{sensor_file_path}_chunk{chunk_idx}.parquet'
                         # HSDatalogConverter.to_parquet(df, chunk_file, mode='w')
                         HSDatalogConverter.to_parquet(df, chunk_file)
                         parquet_chunk_paths.append(chunk_file)
                         chunk_idx += 1
-                    log.debug(f"df to {file_format} COMPLETED!")
+                    log.debug(f'df to {file_format} COMPLETED!')
 
                     # If the dataframe is empty, mark the last chunk and log completion.
                     if len(df) == 0:
                         is_last_chunk = True
-                        log.info("--> Conversion completed")
+                        log.info('--> Conversion completed')
                     else:
-                        log.debug("--> Chunk Conversion completed")
+                        log.debug('--> Chunk Conversion completed')
                         # Increment the time offset by the chunk time size for the next iteration.
                         # This sets up the start time for the next chunk.
                         next_start_time = float(df.iloc[-1, 0])
@@ -2137,31 +2124,27 @@ class HSDatalog:
                     # If no data frame or empty dataframe is returned, mark the last chunk.
                     # This could happen if there is no more data to process or if an error occurred.
                     is_last_chunk = True
-                    log.info("--> Conversion completed")
+                    log.info('--> Conversion completed')
 
             else:
                 # If no dataframe is returned, mark the last chunk and log completion.
                 is_last_chunk = True
-                log.info("--> Empty DataFrame returned, Conversion completed")
+                log.info('--> Empty DataFrame returned, Conversion completed')
 
-        if file_format == "PARQUET":
+        if file_format == 'PARQUET':
             if len(parquet_chunk_paths) == 1:
                 # If only one chunk file was created, rename it to the final output file.
                 os.rename(parquet_chunk_paths[0], output_parquet_file)
             elif len(parquet_chunk_paths) > 1:
                 # If multiple chunk files were created, merge them into a single Parquet file.
-                log.info(
-                    (
-                        f"Merging {len(parquet_chunk_paths)} Parquet chunk files into "
-                        f"{output_parquet_file}"
-                    )
-                )
+                log.info((f'Merging {len(parquet_chunk_paths)} Parquet chunk files into {output_parquet_file}'))
                 # Use fastparquet to read and write Parquet files, streaming
                 # row-groups to keep memory usage low.
+                # Custom
                 from fastparquet import ParquetFile, write
 
                 for chunk_file in parquet_chunk_paths:
-                    log.debug(f"Processing chunk file: {chunk_file}")
+                    log.debug(f'Processing chunk file: {chunk_file}')
                     # Read the chunk file and append its row-groups to the output Parquet file.
                     pf = ParquetFile(chunk_file)
                     for chunk_df in pf.iter_row_groups():
@@ -2238,6 +2221,85 @@ class HSDatalog:
         )
 
     @staticmethod
+    def _ranging_field_label(field_name):
+        label = field_name.replace('_', ' ').title()
+        return label[7:] if label.startswith('Target ') else label
+
+    @staticmethod
+    def _ranging_frame_shape(c_status, zones):
+        resolution = c_status.get('resolution')
+        if isinstance(resolution, str):
+            parts = resolution.lower().split('x')
+            if len(parts) == 2:
+                try:
+                    columns = int(parts[0].strip())
+                    rows = int(parts[1].strip())
+                except ValueError:
+                    rows = columns = None
+                else:
+                    if rows * columns == zones:
+                        return rows, columns
+                    raise AcquisitionFormatError(f'Ranging resolution {columns}x{rows} does not match {zones} zones')
+
+        side = math.isqrt(int(zones))
+        if side * side != int(zones):
+            raise AcquisitionFormatError(f'Ranging source has {zones} zones, which is not a square grid')
+        return side, side
+
+    @staticmethod
+    def _ranging_output_fields(c_status, n_axes):
+        output_format = c_status.get('output_format')
+        nof_outputs = output_format.get('nof_outputs') if isinstance(output_format, dict) else None
+        if not isinstance(nof_outputs, int) or nof_outputs <= 0:
+            raise AcquisitionFormatError('Ranging output_format must include a positive nof_outputs value')
+        if int(n_axes) % nof_outputs != 0:
+            raise AcquisitionFormatError(f'Ranging dimensions {n_axes} are not divisible by nof_outputs {nof_outputs}')
+
+        output_fields = [
+            (field.get('start_id'), name)
+            for name, field in output_format.items()
+            if name != 'nof_outputs' and isinstance(field, dict)
+        ]
+        output_fields.sort(key=lambda item: item[0] if isinstance(item[0], int) else nof_outputs)
+        if len(output_fields) != nof_outputs:
+            raise AcquisitionFormatError('Ranging output_format must describe every interleaved output field')
+
+        zones = int(n_axes) // nof_outputs
+        rows, columns = HSDatalog._ranging_frame_shape(c_status, zones)
+        return output_fields, nof_outputs, zones, rows, columns
+
+    @staticmethod
+    def _create_or_append_ranging_frames(sensor_group, c_status, data_block, curr_len=0):
+        samples, n_axes = data_block.shape
+        output_fields, nof_outputs, zones, rows, columns = HSDatalog._ranging_output_fields(c_status, n_axes)
+        reshaped = data_block.reshape(samples, zones, nof_outputs)
+
+        for index, (_, field_name) in enumerate(output_fields):
+            label = HSDatalog._ranging_field_label(field_name)
+            frames = reshaped[:, :, index].reshape(samples, rows, columns)
+            if curr_len == 0:
+                chunk_frames = max(1, min(32, 262144 // (rows * columns * 4)))
+                field_group = sensor_group.create_group(label)
+                field_group.attrs['Field'] = field_name
+                try:
+                    field_group.create_dataset(
+                        'frames',
+                        data=frames,
+                        maxshape=(None, rows, columns),
+                        chunks=(chunk_frames, rows, columns),
+                        compression='lzf',
+                    )
+                except Exception:
+                    field_group.create_dataset(
+                        'frames', data=frames, maxshape=(None, rows, columns), chunks=(chunk_frames, rows, columns)
+                    )
+            else:
+                dataset = sensor_group[f'{label}/frames']
+                new_len = curr_len + samples
+                dataset.resize((new_len, rows, columns))
+                dataset[curr_len:new_len] = frames
+
+    @staticmethod
     def convert_acquisition_to_hdf5(
         hsd: HSDatalog_v2,
         components,
@@ -2249,7 +2311,7 @@ class HSDatalog:
         which_tags: list = [],
         no_timestamps=False,
         chunk_size=DEFAULT_SAMPLES_CHUNK_SIZE,
-        target_filename=None
+        target_filename=None,
     ):
         """
         Converts acquisition data to HDF5 format and save it to the
@@ -2290,28 +2352,34 @@ class HSDatalog:
             acquisition_folder_name = os.path.basename(hsd.get_acquisition_path())
             # Construct the base path for the HDF5 file using the output folder and acquisition folder name.
             base_hdf_file_path = os.path.join(output_folder, acquisition_folder_name)
-        
+
         # Append the .h5 extension to the base path to create the full file path.
-        hdf_file_path = base_hdf_file_path + ".h5"
+        hdf_file_path = base_hdf_file_path + '.h5'
         # Create an HDF5 file in append mode
-        hdf = h5py.File(hdf_file_path, "a")
+        hdf = h5py.File(hdf_file_path, 'a')
 
         # Ensure components is a list
         if not isinstance(components, list):
             components = [components]
 
-        sensor_components = [c for c in components if c.get(list(c.keys())[0], {}).get("c_type") == ComponentTypeEnum.SENSOR.value]
-        algorithm_components = [c for c in components if c.get(list(c.keys())[0], {}).get("c_type") == ComponentTypeEnum.ALGORITHM.value]
-        actuator_components = [c for c in components if c.get(list(c.keys())[0], {}).get("c_type") == ComponentTypeEnum.ACTUATOR.value]
+        sensor_components = [
+            c for c in components if c.get(list(c.keys())[0], {}).get('c_type') == ComponentTypeEnum.SENSOR.value
+        ]
+        algorithm_components = [
+            c for c in components if c.get(list(c.keys())[0], {}).get('c_type') == ComponentTypeEnum.ALGORITHM.value
+        ]
+        actuator_components = [
+            c for c in components if c.get(list(c.keys())[0], {}).get('c_type') == ComponentTypeEnum.ACTUATOR.value
+        ]
 
         if len(sensor_components) > 0:
-            if "sensors_data" not in hdf:
-                hdf.create_group("sensors_data")
+            if 'sensors_data' not in hdf:
+                hdf.create_group('sensors_data')
 
             for c in sensor_components:
                 c_name = list(c.keys())[0]
                 c_status = c[c_name]
-                c_type = c_status.get("c_type")
+                c_type = c_status.get('c_type')
                 if c_type != ComponentTypeEnum.SENSOR.value:
                     continue
 
@@ -2334,10 +2402,10 @@ class HSDatalog:
                         continue
 
                     if first_chunk:
-                        sensor_group = hdf.create_group(f"sensors_data/{c_name}")
-                        axis_labels = hsd.get_sensor_axis_label(c_status, c_name)
+                        sensor_group = hdf.create_group(f'sensors_data/{c_name}')
 
-                        is_audio = c_status.get("sensor_category") == SensorCategoryEnum.ISENSOR_CLASS_AUDIO.value
+                        is_audio = c_status.get('sensor_category') == SensorCategoryEnum.ISENSOR_CLASS_AUDIO.value
+                        is_ranging = c_status.get('sensor_category') == SensorCategoryEnum.ISENSOR_CLASS_RANGING.value
 
                         if is_audio:
                             # Large uncompressed chunks for maximum write throughput
@@ -2347,127 +2415,139 @@ class HSDatalog:
                         else:
                             # Moderate chunk for typical multi-axis sensors; lzf = fast
                             chunk_len = min(max(samples, 8192), 65536)
-                            compression = "lzf"
-                            
+                            compression = 'lzf'
 
                         chunk_shape = (chunk_len,)
 
-                        for i, ax in enumerate(axis_labels):
-                            try:
-                                sensor_group.create_dataset(
-                                    ax,
-                                    data=data_block[:, i],
-                                    maxshape=(None,),
-                                    chunks=chunk_shape,
-                                    compression=compression
-                                )
-                            except Exception:
-                                sensor_group.create_dataset(
-                                    ax,
-                                    data=data_block[:, i],
-                                    maxshape=(None,),
-                                    chunks=chunk_shape
-                                )
+                        if is_ranging:
+                            HSDatalog._create_or_append_ranging_frames(sensor_group, c_status, data_block)
+                        else:
+                            axis_labels = hsd.get_sensor_axis_label(c_status, c_name)
+                            for i, ax in enumerate(axis_labels):
+                                try:
+                                    sensor_group.create_dataset(
+                                        ax,
+                                        data=data_block[:, i],
+                                        maxshape=(None,),
+                                        chunks=chunk_shape,
+                                        compression=compression,
+                                    )
+                                except Exception:
+                                    sensor_group.create_dataset(
+                                        ax, data=data_block[:, i], maxshape=(None,), chunks=chunk_shape
+                                    )
                         if not no_timestamps:
                             try:
                                 sensor_group.create_dataset(
-                                    "timestamps",
+                                    'timestamps',
                                     data=ts_block,
                                     maxshape=(None,),
                                     chunks=chunk_shape,
-                                    compression=compression
+                                    compression=compression,
                                 )
                             except Exception:
                                 sensor_group.create_dataset(
-                                    "timestamps",
-                                    data=ts_block,
-                                    maxshape=(None,),
-                                    chunks=chunk_shape
+                                    'timestamps', data=ts_block, maxshape=(None,), chunks=chunk_shape
                                 )
 
                         # Attributes
-                        s_category = c_status.get("sensor_category")
+                        s_category = c_status.get('sensor_category')
                         _, s_type = FileManager.decode_file_name(c_name)
 
                         if s_category == SensorCategoryEnum.ISENSOR_CLASS_MEMS.value:
-                            sensor_group.attrs['ODR'] = c_status.get('odr', "N/A")
-                            sensor_group.attrs['FS'] = c_status.get('fs', "N/A")
-                            sensor_group.attrs['Sensitivity'] = c_status.get('sensitivity', "N/A")
-                            sensor_group.attrs['Measured ODR'] = c_status.get('measodr', "N/A")
+                            sensor_group.attrs['ODR'] = c_status.get('odr', 'N/A')
+                            sensor_group.attrs['FS'] = c_status.get('fs', 'N/A')
+                            sensor_group.attrs['Sensitivity'] = c_status.get('sensitivity', 'N/A')
+                            sensor_group.attrs['Measured ODR'] = c_status.get('measodr', 'N/A')
                         elif s_category == SensorCategoryEnum.ISENSOR_CLASS_AUDIO.value:
-                            sensor_group.attrs['ODR'] = c_status.get('odr', "N/A")
-                            sensor_group.attrs['AOP'] = c_status.get('aop', "N/A")
-                            sensor_group.attrs['Volume'] = c_status.get('sensitivity', "N/A")
-                            sensor_group.attrs['Resolution'] = c_status.get('resolution', "N/A")
+                            sensor_group.attrs['ODR'] = c_status.get('odr', 'N/A')
+                            sensor_group.attrs['AOP'] = c_status.get('aop', 'N/A')
+                            sensor_group.attrs['Volume'] = c_status.get('sensitivity', 'N/A')
+                            sensor_group.attrs['Resolution'] = c_status.get('resolution', 'N/A')
                         elif s_category == SensorCategoryEnum.ISENSOR_CLASS_RANGING.value:
-                            sensor_group.attrs['ODR'] = c_status.get('odr', "N/A")
-                            sensor_group.attrs['Resolution'] = c_status.get('resolution', "N/A")
-                            sensor_group.attrs['Ranging Mode'] = c_status.get('ranging_mode', "N/A")
+                            sensor_group.attrs['ODR'] = c_status.get('odr', 'N/A')
+                            sensor_group.attrs['Resolution'] = c_status.get('resolution', 'N/A')
+                            sensor_group.attrs['Ranging Mode'] = c_status.get('ranging_mode', 'N/A')
                         elif s_category == SensorCategoryEnum.ISENSOR_CLASS_LIGHT.value:
-                            sensor_group.attrs['Intermeasurement Time'] = c_status.get('intermeasurement_time', "N/A")
-                            sensor_group.attrs['Exposure Time'] = c_status.get('exposure_time', "N/A")
-                            for ch in range(1,7):
-                                sensor_group.attrs[f'Channel {ch} Gain'] = c_status.get(f'channel{ch}_gain', "N/A")
-                            sensor_group.attrs['Dark Mode'] = c_status.get('dark_mode', "N/A")
+                            sensor_group.attrs['Intermeasurement Time'] = c_status.get('intermeasurement_time', 'N/A')
+                            sensor_group.attrs['Exposure Time'] = c_status.get('exposure_time', 'N/A')
+                            for ch in range(1, 7):
+                                sensor_group.attrs[f'Channel {ch} Gain'] = c_status.get(f'channel{ch}_gain', 'N/A')
+                            sensor_group.attrs['Dark Mode'] = c_status.get('dark_mode', 'N/A')
                         elif s_category == SensorCategoryEnum.ISENSOR_CLASS_PRESENCE.value:
-                            sensor_group.attrs['ODR'] = c_status.get('odr', "N/A")
-                            sensor_group.attrs['Transmittance'] = c_status.get('transmittance', "N/A")
-                            sensor_group.attrs['Avg Object Temperature Number'] = c_status.get('avg_tobject_num', "N/A")
-                            sensor_group.attrs['Avg Ambient Temperature Number'] = c_status.get('avg_tambient_num', "N/A")
-                            sensor_group.attrs['LPF Presence'] = c_status.get('lpf_p_bandwidth', "N/A")
-                            sensor_group.attrs['LPF Motion'] = c_status.get('lpf_m_bandwidth', "N/A")
-                            sensor_group.attrs['LPF Presence and Motion'] = c_status.get('lpf_p_m_bandwidth', "N/A")
-                            sensor_group.attrs['Presence Threshold'] = c_status.get('presence_threshold', "N/A")
-                            sensor_group.attrs['Presence Hysteresis'] = c_status.get('presence_hysteresis', "N/A")
-                            sensor_group.attrs['Motion Threshold'] = c_status.get('motion_threshold', "N/A")
-                            sensor_group.attrs['Motion Hysteresis'] = c_status.get('motion_hysteresis', "N/A")
-                            sensor_group.attrs['Ambient Threshold'] = c_status.get('tambient_shock_threshold', "N/A")
-                            sensor_group.attrs['Ambient Hysteresis'] = c_status.get('tambient_shock_hysteresis', "N/A")
-                            sensor_group.attrs['Embedded Compensation'] = c_status.get('embedded_compensation', "N/A")
-                            sensor_group.attrs['Software Compensation'] = c_status.get('software_compensation', "N/A")
-                            sensor_group.attrs['Compensation Type'] = c_status.get('compensation_type', "N/A")
-                            sensor_group.attrs['SW Presence Threshold'] = c_status.get('sw_presence_threshold', "N/A")
-                            sensor_group.attrs['SW Motion Threshold'] = c_status.get('sw_motion_threshold', "N/A")
-                            sensor_group.attrs['Compensation Filter Flag'] = c_status.get('compensation_filter_flag', "N/A")
-                            sensor_group.attrs['Absence Static Flag'] = c_status.get('absence_static_flag', "N/A")
+                            sensor_group.attrs['ODR'] = c_status.get('odr', 'N/A')
+                            sensor_group.attrs['Transmittance'] = c_status.get('transmittance', 'N/A')
+                            sensor_group.attrs['Avg Object Temperature Number'] = c_status.get('avg_tobject_num', 'N/A')
+                            sensor_group.attrs['Avg Ambient Temperature Number'] = c_status.get(
+                                'avg_tambient_num', 'N/A'
+                            )
+                            sensor_group.attrs['LPF Presence'] = c_status.get('lpf_p_bandwidth', 'N/A')
+                            sensor_group.attrs['LPF Motion'] = c_status.get('lpf_m_bandwidth', 'N/A')
+                            sensor_group.attrs['LPF Presence and Motion'] = c_status.get('lpf_p_m_bandwidth', 'N/A')
+                            sensor_group.attrs['Presence Threshold'] = c_status.get('presence_threshold', 'N/A')
+                            sensor_group.attrs['Presence Hysteresis'] = c_status.get('presence_hysteresis', 'N/A')
+                            sensor_group.attrs['Motion Threshold'] = c_status.get('motion_threshold', 'N/A')
+                            sensor_group.attrs['Motion Hysteresis'] = c_status.get('motion_hysteresis', 'N/A')
+                            sensor_group.attrs['Ambient Threshold'] = c_status.get('tambient_shock_threshold', 'N/A')
+                            sensor_group.attrs['Ambient Hysteresis'] = c_status.get('tambient_shock_hysteresis', 'N/A')
+                            sensor_group.attrs['Embedded Compensation'] = c_status.get('embedded_compensation', 'N/A')
+                            sensor_group.attrs['Software Compensation'] = c_status.get('software_compensation', 'N/A')
+                            sensor_group.attrs['Compensation Type'] = c_status.get('compensation_type', 'N/A')
+                            sensor_group.attrs['SW Presence Threshold'] = c_status.get('sw_presence_threshold', 'N/A')
+                            sensor_group.attrs['SW Motion Threshold'] = c_status.get('sw_motion_threshold', 'N/A')
+                            sensor_group.attrs['Compensation Filter Flag'] = c_status.get(
+                                'compensation_filter_flag', 'N/A'
+                            )
+                            sensor_group.attrs['Absence Static Flag'] = c_status.get('absence_static_flag', 'N/A')
                         elif s_category == SensorCategoryEnum.ISENSOR_CLASS_POWERMETER.value:
-                            sensor_group.attrs['ADC Conversion Time'] = c_status.get('adc_conversion_time', "N/A")
+                            sensor_group.attrs['ADC Conversion Time'] = c_status.get('adc_conversion_time', 'N/A')
 
                         sensor_group.attrs['Sensor Type'] = SensorTypeConversion.get_type_extended(s_type)
-                        sensor_group.attrs['Unit'] = c_status.get('unit', "N/A")
-                        sensor_group.attrs['Dimensions'] = c_status.get('dim', "N/A")
-                        sensor_group.attrs['Samples per Timestamps'] = c_status.get('samples_per_ts', "N/A")
-                        sensor_group.attrs['Initial Offset'] = c_status.get('ioffset', "N/A")
-                        sensor_group.attrs['Data Type'] = c_status.get('data_type', "N/A")
-                        sensor_group.attrs['USB Data Packet Size'] = c_status.get('usb_dps', "N/A")
-                        sensor_group.attrs['SD Data Packet Size'] = c_status.get('sd_dps', "N/A")
-                        sensor_group.attrs['Sensor Annotation'] = c_status.get('sensor_annotation', "N/A")
+                        sensor_group.attrs['Unit'] = c_status.get('unit', 'N/A')
+                        sensor_group.attrs['Dimensions'] = c_status.get('dim', 'N/A')
+                        sensor_group.attrs['Samples per Timestamps'] = c_status.get('samples_per_ts', 'N/A')
+                        sensor_group.attrs['Initial Offset'] = c_status.get('ioffset', 'N/A')
+                        sensor_group.attrs['Data Type'] = c_status.get('data_type', 'N/A')
+                        sensor_group.attrs['USB Data Packet Size'] = c_status.get('usb_dps', 'N/A')
+                        sensor_group.attrs['SD Data Packet Size'] = c_status.get('sd_dps', 'N/A')
+                        sensor_group.attrs['Sensor Annotation'] = c_status.get('sensor_annotation', 'N/A')
                         sensor_group.attrs['Mounted'] = c_status.get('mounted', True)
 
                         first_chunk = False
                         continue
 
                     # Append
-                    curr_len = sensor_group[axis_labels[0]].shape[0]
+                    is_ranging = c_status.get('sensor_category') == SensorCategoryEnum.ISENSOR_CLASS_RANGING.value
+                    if is_ranging:
+                        first_frames = next(
+                            child['frames']
+                            for child in sensor_group.values()
+                            if isinstance(child, h5py.Group) and 'frames' in child
+                        )
+                        curr_len = first_frames.shape[0]
+                        HSDatalog._create_or_append_ranging_frames(sensor_group, c_status, data_block, curr_len)
+                    else:
+                        curr_len = sensor_group[axis_labels[0]].shape[0]
+                        new_len = curr_len + samples
+                        for i, ax in enumerate(axis_labels):
+                            ds = sensor_group[ax]
+                            ds.resize((new_len,))
+                            ds[curr_len:new_len] = data_block[:, i]
                     new_len = curr_len + samples
-                    for i, ax in enumerate(axis_labels):
-                        ds = sensor_group[ax]
-                        ds.resize((new_len,))
-                        ds[curr_len:new_len] = data_block[:, i]
                     if not no_timestamps:
                         ts_ds = sensor_group['timestamps']
                         ts_ds.resize((new_len,))
                         ts_ds[curr_len:new_len] = ts_block
 
         if len(algorithm_components) > 0:
-            if "algorithms_data" not in hdf:
-                hdf.create_group("algorithms_data")
+            if 'algorithms_data' not in hdf:
+                hdf.create_group('algorithms_data')
                 # TODO: Add algorithm data handling when algorithms with data will be available
                 # in HSDatalog_v2. For now, just create the group in the HDF5 file.
             pass
 
         if len(actuator_components) > 0:
-            
+
             def get_enabled_fast_mc_telemetries(fast_telemetry_status):
                 """
                 TODO: Clunky method to be removed in the future when fast MC telemetry components will be properly categorized
@@ -2479,17 +2559,17 @@ class HSDatalog:
                 enabled_fast_mc_telemetries = {}
                 for item in fast_telemetry_status:
                     ft_item = fast_telemetry_status[item]
-                    if isinstance(ft_item, dict) and ft_item.get("enabled", False):
+                    if isinstance(ft_item, dict) and ft_item.get('enabled', False):
                         enabled_fast_mc_telemetries[item] = ft_item
                 return enabled_fast_mc_telemetries
-            
-            if "actuators_data" not in hdf:
-                hdf.create_group("actuators_data")
-            
+
+            if 'actuators_data' not in hdf:
+                hdf.create_group('actuators_data')
+
             for c in actuator_components:
                 c_name = list(c.keys())[0]
                 c_status = c[c_name]
-                c_type = c_status.get("c_type")
+                c_type = c_status.get('c_type')
                 if c_type != ComponentTypeEnum.ACTUATOR.value:
                     continue
 
@@ -2512,25 +2592,25 @@ class HSDatalog:
                         continue
 
                     if first_chunk:
-                        actuator_group = hdf.create_group(f"actuators_data/{c_name}")
+                        actuator_group = hdf.create_group(f'actuators_data/{c_name}')
 
                         # Attributes
                         a_type = c_name
-                        
-                        #TODO: This is a temporary solution mandatory due to a bad FW implementation
+
+                        # TODO: This is a temporary solution mandatory due to a bad FW implementation
                         # that uses custom naming and missing information for actuators.
                         # It will be removed when FW will be fixed and all actuators will respect
-                        # a common convention for metadata. 
-                        if a_type == "slow_mc_telemetries":
-                            telemetries = c_status.get("st_ble_stream")
+                        # a common convention for metadata.
+                        if a_type == 'slow_mc_telemetries':
+                            telemetries = c_status.get('st_ble_stream')
                             telemetries_labels = [k for k, v in telemetries.items()]
-                            if "id" in telemetries_labels:
-                                telemetries_labels.remove("id")
+                            if 'id' in telemetries_labels:
+                                telemetries_labels.remove('id')
 
-                            print(f"Actuator {c_name} has slow telemetries: {telemetries_labels}")
+                            print(f'Actuator {c_name} has slow telemetries: {telemetries_labels}')
 
                             chunk_len = min(max(samples, 8192), 65536)
-                            compression = "lzf"
+                            compression = 'lzf'
 
                             chunk_shape = (chunk_len,)
 
@@ -2541,65 +2621,69 @@ class HSDatalog:
                                         data=data_block[:, i],
                                         maxshape=(None,),
                                         chunks=chunk_shape,
-                                        compression=compression
+                                        compression=compression,
                                     )
-                                    dset.attrs["Unit"] = telemetries.get(tl, {}).get("unit", "N/A")
-                                    dset.attrs["Format"] = telemetries.get(tl, {}).get("format", "N/A")
-                                    if telemetries.get(tl, {}).get("max") is not None:
-                                        dset.attrs["Max"] = telemetries.get(tl, {}).get("max", "N/A")
-                                    if telemetries.get(tl, {}).get("min") is not None:
-                                        dset.attrs["Min"] = telemetries.get(tl, {}).get("min", "N/A")
-                                    if telemetries.get(tl, {}).get("initial_value") is not None:
-                                        dset.attrs["Initial Value"] = telemetries.get(tl, {}).get("initial_value", "N/A")
+                                    dset.attrs['Unit'] = telemetries.get(tl, {}).get('unit', 'N/A')
+                                    dset.attrs['Format'] = telemetries.get(tl, {}).get('format', 'N/A')
+                                    if telemetries.get(tl, {}).get('max') is not None:
+                                        dset.attrs['Max'] = telemetries.get(tl, {}).get('max', 'N/A')
+                                    if telemetries.get(tl, {}).get('min') is not None:
+                                        dset.attrs['Min'] = telemetries.get(tl, {}).get('min', 'N/A')
+                                    if telemetries.get(tl, {}).get('initial_value') is not None:
+                                        dset.attrs['Initial Value'] = telemetries.get(tl, {}).get(
+                                            'initial_value', 'N/A'
+                                        )
                                 except Exception:
                                     actuator_group.create_dataset(
-                                        tl,
-                                        data=data_block[:, i],
-                                        maxshape=(None,),
-                                        chunks=chunk_shape
+                                        tl, data=data_block[:, i], maxshape=(None,), chunks=chunk_shape
                                     )
-                                    dset.attrs["Unit"] = telemetries.get(tl, {}).get("unit", "N/A")
-                                    dset.attrs["Format"] = telemetries.get(tl, {}).get("format", "N/A")
-                                    if telemetries.get(tl, {}).get("max") is not None:
-                                        dset.attrs["Max"] = telemetries.get(tl, {}).get("max", "N/A")
-                                    if telemetries.get(tl, {}).get("min") is not None:
-                                        dset.attrs["Min"] = telemetries.get(tl, {}).get("min", "N/A")
-                                    if telemetries.get(tl, {}).get("initial_value") is not None:
-                                        dset.attrs["Initial Value"] = telemetries.get(tl, {}).get("initial_value", "N/A")
+                                    dset.attrs['Unit'] = telemetries.get(tl, {}).get('unit', 'N/A')
+                                    dset.attrs['Format'] = telemetries.get(tl, {}).get('format', 'N/A')
+                                    if telemetries.get(tl, {}).get('max') is not None:
+                                        dset.attrs['Max'] = telemetries.get(tl, {}).get('max', 'N/A')
+                                    if telemetries.get(tl, {}).get('min') is not None:
+                                        dset.attrs['Min'] = telemetries.get(tl, {}).get('min', 'N/A')
+                                    if telemetries.get(tl, {}).get('initial_value') is not None:
+                                        dset.attrs['Initial Value'] = telemetries.get(tl, {}).get(
+                                            'initial_value', 'N/A'
+                                        )
                             if not no_timestamps:
                                 try:
                                     actuator_group.create_dataset(
-                                        "timestamps",
+                                        'timestamps',
                                         data=ts_block,
                                         maxshape=(None,),
                                         chunks=chunk_shape,
-                                        compression=compression
+                                        compression=compression,
                                     )
                                 except Exception:
                                     actuator_group.create_dataset(
-                                        "timestamps",
-                                        data=ts_block,
-                                        maxshape=(None,),
-                                        chunks=chunk_shape
+                                        'timestamps', data=ts_block, maxshape=(None,), chunks=chunk_shape
                                     )
-                            actuator_group.attrs['Actuator Type'] = "Slow MC Telemetries"
+                            actuator_group.attrs['Actuator Type'] = 'Slow MC Telemetries'
 
-                        elif a_type == "fast_mc_telemetries":
-                            print(f"Actuator {c_name} has fast telemetries")
+                        elif a_type == 'fast_mc_telemetries':
+                            print(f'Actuator {c_name} has fast telemetries')
                             telemetries = get_enabled_fast_mc_telemetries(c_status)
                             for tl in telemetries:
-                                if "i_" in tl:
-                                    telemetries[tl]["sensitivity"] = c_status.get("sensitivity", {}).get("current", "N/A")
-                                if "v_" in tl:
-                                    telemetries[tl]["sensitivity"] = c_status.get("sensitivity", {}).get("voltage", "N/A")
-                                if "f_" in tl:
-                                    telemetries[tl]["sensitivity"] = c_status.get("sensitivity", {}).get("frequency", "N/A")
+                                if 'i_' in tl:
+                                    telemetries[tl]['sensitivity'] = c_status.get('sensitivity', {}).get(
+                                        'current', 'N/A'
+                                    )
+                                if 'v_' in tl:
+                                    telemetries[tl]['sensitivity'] = c_status.get('sensitivity', {}).get(
+                                        'voltage', 'N/A'
+                                    )
+                                if 'f_' in tl:
+                                    telemetries[tl]['sensitivity'] = c_status.get('sensitivity', {}).get(
+                                        'frequency', 'N/A'
+                                    )
                             telemetries_labels = [k for k, v in telemetries.items()]
 
-                            print(f"Actuator {c_name} has fast telemetries: {telemetries_labels}")
+                            print(f'Actuator {c_name} has fast telemetries: {telemetries_labels}')
 
                             chunk_len = min(max(samples, 8192), 65536)
-                            compression = "lzf"
+                            compression = 'lzf'
 
                             chunk_shape = (chunk_len,)
 
@@ -2610,49 +2694,43 @@ class HSDatalog:
                                         data=data_block[:, i],
                                         maxshape=(None,),
                                         chunks=chunk_shape,
-                                        compression=compression
+                                        compression=compression,
                                     )
-                                    dset.attrs["Unit"] = telemetries.get(tl, {}).get("unit", "N/A")
-                                    dset.attrs["Sensitivity"] = telemetries.get(tl, {}).get("sensitivity", "N/A")
-                                    
+                                    dset.attrs['Unit'] = telemetries.get(tl, {}).get('unit', 'N/A')
+                                    dset.attrs['Sensitivity'] = telemetries.get(tl, {}).get('sensitivity', 'N/A')
+
                                 except Exception:
                                     actuator_group.create_dataset(
-                                        tl,
-                                        data=data_block[:, i],
-                                        maxshape=(None,),
-                                        chunks=chunk_shape
+                                        tl, data=data_block[:, i], maxshape=(None,), chunks=chunk_shape
                                     )
-                                    dset.attrs["Unit"] = telemetries.get(tl, {}).get("unit", "N/A")
-                                    dset.attrs["Sensitivity"] = telemetries.get(tl, {}).get("sensitivity", "N/A")
+                                    dset.attrs['Unit'] = telemetries.get(tl, {}).get('unit', 'N/A')
+                                    dset.attrs['Sensitivity'] = telemetries.get(tl, {}).get('sensitivity', 'N/A')
                             if not no_timestamps:
                                 try:
                                     actuator_group.create_dataset(
-                                        "timestamps",
+                                        'timestamps',
                                         data=ts_block,
                                         maxshape=(None,),
                                         chunks=chunk_shape,
-                                        compression=compression
+                                        compression=compression,
                                     )
                                 except Exception:
                                     actuator_group.create_dataset(
-                                        "timestamps",
-                                        data=ts_block,
-                                        maxshape=(None,),
-                                        chunks=chunk_shape
+                                        'timestamps', data=ts_block, maxshape=(None,), chunks=chunk_shape
                                     )
-                            actuator_group.attrs['Actuator Type'] = "Fast MC Telemetries"
+                            actuator_group.attrs['Actuator Type'] = 'Fast MC Telemetries'
 
-                        actuator_group.attrs['ODR'] = c_status.get('odr', "N/A")
-                        actuator_group.attrs['Number of telemetries'] = c_status.get('dim', "N/A")
-                        actuator_group.attrs['Samples per Timestamps'] = c_status.get('samples_per_ts', "N/A")
-                        actuator_group.attrs['Initial Offset'] = c_status.get('ioffset', "N/A")
-                        actuator_group.attrs['Data Type'] = c_status.get('data_type', "N/A")
-                        actuator_group.attrs['USB Data Packet Size'] = c_status.get('usb_dps', "N/A")
-                        actuator_group.attrs['SD Data Packet Size'] = c_status.get('sd_dps', "N/A")
+                        actuator_group.attrs['ODR'] = c_status.get('odr', 'N/A')
+                        actuator_group.attrs['Number of telemetries'] = c_status.get('dim', 'N/A')
+                        actuator_group.attrs['Samples per Timestamps'] = c_status.get('samples_per_ts', 'N/A')
+                        actuator_group.attrs['Initial Offset'] = c_status.get('ioffset', 'N/A')
+                        actuator_group.attrs['Data Type'] = c_status.get('data_type', 'N/A')
+                        actuator_group.attrs['USB Data Packet Size'] = c_status.get('usb_dps', 'N/A')
+                        actuator_group.attrs['SD Data Packet Size'] = c_status.get('sd_dps', 'N/A')
 
                         first_chunk = False
                         continue
-                    
+
                     # Append
                     curr_len = actuator_group[telemetries_labels[0]].shape[0]
                     new_len = curr_len + samples
@@ -2667,35 +2745,36 @@ class HSDatalog:
 
         # Retrieve acquisition, device, firmware, and tag information
         acq_info_json = HSDatalog.get_acquisition_info(hsd)
-        device_info_json = HSDatalog.get_device_info(hsd)["DeviceInformation"]
-        fw_info_json = HSDatalog.get_firmware_info(hsd)["firmware_info"]
-        tags_info_json = HSDatalog.get_component(hsd, "tags_info")
+        device_info_json = HSDatalog.get_device_info(hsd)['DeviceInformation']
+        fw_info_json = HSDatalog.get_firmware_info(hsd)['firmware_info']
+        # board_id/fw_id live at the root of the device status, not inside firmware_info.
+        device_json = HSDatalog.get_device(hsd)
+        device_ids_json = device_json if isinstance(device_json, dict) else {}
+        tags_info_json = HSDatalog.get_component(hsd, 'tags_info')
         tag_labels = [
-            value["label"]
-            for _, value in tags_info_json["tags_info"].items()
-            if isinstance(value, dict) and "label" in value
+            value['label']
+            for _, value in tags_info_json['tags_info'].items()
+            if isinstance(value, dict) and 'label' in value
         ]
         time_tags = HSDatalog.get_time_tags(hsd)
 
         # Set attributes from the acquisition info JSON
         acq_info_attributes = {
-            "Name": acq_info_json.get("name", "N/A"),
-            "Description": acq_info_json.get("description", "N/A"),
-            "Start time": acq_info_json.get("start_time", "N/A"),
-            "End time": acq_info_json.get("end_time", "N/A"),
-            "Data extension": acq_info_json.get("data_ext", "N/A"),
-            "Data format": acq_info_json.get("data_fmt", "N/A"),
-            "Schema version": acq_info_json.get("schema_version", "N/A"),
-            "Available Tag Labels": tag_labels if tag_labels != [] else "N/A",
+            'Name': acq_info_json.get('name', 'N/A'),
+            'Description': acq_info_json.get('description', 'N/A'),
+            'Start time': acq_info_json.get('start_time', 'N/A'),
+            'End time': acq_info_json.get('end_time', 'N/A'),
+            'Data extension': acq_info_json.get('data_ext', 'N/A'),
+            'Data format': acq_info_json.get('data_fmt', 'N/A'),
+            'Schema version': acq_info_json.get('schema_version', 'N/A'),
+            'Available Tag Labels': tag_labels if tag_labels != [] else 'N/A',
         }
         # Set the acquisition interface attribute based on its value
-        interface_mapping = {0: "SD Card", 1: "USB", 2: "BLE", 3: "Serial"}
-        acq_info_attributes["Acquisition interface"] = interface_mapping.get(
-            acq_info_json.get("interface"), "Unknown"
-        )
+        interface_mapping = {0: 'SD Card', 1: 'USB', 2: 'BLE', 3: 'Serial'}
+        acq_info_attributes['Acquisition interface'] = interface_mapping.get(acq_info_json.get('interface'), 'Unknown')
 
         # Create acquisition metadata group and set attributes
-        acquisition_info_group = hdf.create_group("acquisition_metadata")
+        acquisition_info_group = hdf.create_group('acquisition_metadata')
         for key, value in acq_info_attributes.items():
             acquisition_info_group.attrs[key] = value
 
@@ -2705,46 +2784,49 @@ class HSDatalog:
             tag_entries_counter = {}
             for tt in time_tags:
                 if which_tags != []:
-                    if tt["label"] not in which_tags:
+                    if tt['label'] not in which_tags:
                         continue
-                if f"acquisition_metadata/tags/{tt['label']}" not in hdf:
-                    hdf.create_group(f"acquisition_metadata/tags/{tt['label']}")
-                    tag_entries_counter[tt["label"]] = 0
+                if f'acquisition_metadata/tags/{tt["label"]}' not in hdf:
+                    hdf.create_group(f'acquisition_metadata/tags/{tt["label"]}')
+                    tag_entries_counter[tt['label']] = 0
                 else:
-                    hdf.get(f"acquisition_metadata/tags/{tt['label']}")
-                    tag_entries_counter[tt["label"]] += 1
+                    hdf.get(f'acquisition_metadata/tags/{tt["label"]}')
+                    tag_entries_counter[tt['label']] += 1
                 tag_group = hdf.create_group(
-                    f"acquisition_metadata/tags/{tt['label']}/{tag_entries_counter[tt['label']]}"
+                    f'acquisition_metadata/tags/{tt["label"]}/{tag_entries_counter[tt["label"]]}'
                 )
-                tag_group.attrs["Start time"] = tt["time_start"]
-                tag_group.attrs["End time"] = tt["time_end"]
+                tag_group.attrs['Start time'] = tt['time_start']
+                tag_group.attrs['End time'] = tt['time_end']
 
         # Set attributes from the device info JSON
         device_info_attributes = {
-            "Manufacturer": device_info_json.get("manufacturer", "N/A"),
-            "Model": device_info_json.get("model", "N/A"),
-            "Software version": device_info_json.get("swVersion", "N/A"),
-            "Operating system": device_info_json.get("osName", "N/A"),
-            "Processor architecture": device_info_json.get("processorArchitecture", "N/A"),
-            "Processor manufacturer": device_info_json.get("processorManufacturer", "N/A"),
-            "Total storage": device_info_json.get("totalStorage", "N/A"),
-            "Total memory": device_info_json.get("totalMemory", "N/A"),
+            'Manufacturer': device_info_json.get('manufacturer', 'N/A'),
+            'Model': device_info_json.get('model', 'N/A'),
+            'Software version': device_info_json.get('swVersion', 'N/A'),
+            'Operating system': device_info_json.get('osName', 'N/A'),
+            'Processor architecture': device_info_json.get('processorArchitecture', 'N/A'),
+            'Processor manufacturer': device_info_json.get('processorManufacturer', 'N/A'),
+            'Total storage': device_info_json.get('totalStorage', 'N/A'),
+            'Total memory': device_info_json.get('totalMemory', 'N/A'),
         }
-        device_info_group = hdf.create_group("device_metadata")
+        device_info_group = hdf.create_group('device_metadata')
         for key, value in device_info_attributes.items():
             device_info_group.attrs[key] = value
 
         # Set attributes from the firmware info JSON
         firmware_info_attributes = {
-            "Alias": fw_info_json.get("alias", "N/A"),
-            "Firmware name": fw_info_json.get("fw_name", "N/A"),
-            "Firmware version": fw_info_json.get("fw_version", "N/A"),
-            "Part number": fw_info_json.get("part_number", "N/A"),
-            "Device URL": fw_info_json.get("device_url", "N/A"),
-            "Firmware URL": fw_info_json.get("fw_url", "N/A"),
-            "MAC address": fw_info_json.get("mac_address", "N/A"),
+            'Alias': fw_info_json.get('alias', 'N/A'),
+            'Firmware name': fw_info_json.get('fw_name', 'N/A'),
+            'Firmware version': fw_info_json.get('fw_version', 'N/A'),
+            'Part number': fw_info_json.get('part_number', 'N/A'),
+            'Device URL': fw_info_json.get('device_url', 'N/A'),
+            'Firmware URL': fw_info_json.get('fw_url', 'N/A'),
+            'MAC address': fw_info_json.get('mac_address', 'N/A'),
+            # Catalog identifiers: let a dataset built from this H5 look its DTDL model up again.
+            'Board id': str(device_ids_json.get('board_id', 'N/A')),
+            'Firmware id': str(device_ids_json.get('fw_id', 'N/A')),
         }
-        firmware_info_group = hdf.create_group("firmware_metadata")
+        firmware_info_group = hdf.create_group('firmware_metadata')
         for key, value in firmware_info_attributes.items():
             firmware_info_group.attrs[key] = value
 
@@ -2815,17 +2897,15 @@ class HSDatalog:
             # Flag to indicate if it's the first batch of untagged data.
             first_untagged = True
             # Create the sub-folder for untagged data if it doesn't exist.
-            untagged_sub_folder = os.path.join(output_folder, "untagged")
+            untagged_sub_folder = os.path.join(output_folder, 'untagged')
             os.makedirs(untagged_sub_folder, exist_ok=True)
             # Determine the file path for untagged data based on the output folder.
-            if output_folder != acquisition_path + "_Exported":
+            if output_folder != acquisition_path + '_Exported':
                 untagged_file_path = os.path.join(
-                    untagged_sub_folder, f"untagged_{comp_name}_{acquisition_folder_name}_dataLog"
+                    untagged_sub_folder, f'untagged_{comp_name}_{acquisition_folder_name}_dataLog'
                 )
             else:
-                untagged_file_path = os.path.join(
-                    untagged_sub_folder, f"untagged_{comp_name}_dataLog"
-                )
+                untagged_file_path = os.path.join(untagged_sub_folder, f'untagged_{comp_name}_dataLog')
 
         # Calculate the time duration of each chunk based on the chunk size
         # and the output data rate (odr).
@@ -2852,22 +2932,20 @@ class HSDatalog:
                 tags_columns = filtered_list
             else:
                 # If no valid tags are found, raise an exception.
-                raise MissingTagsException(
-                    "No valid tags were found in your selected tag filtering list."
-                )
+                raise MissingTagsException('No valid tags were found in your selected tag filtering list.')
 
         # Initialize a dictionary to store the last timestamp and tag group index for each tag.
         last_tags_batch_info = {}  # Structure: {tag: {last_timestamp, tag_group_id, first_chunk}}
         for t in tags_columns:
             # Initialize the dictionary with default values for each tag.
-            last_tags_batch_info[t] = {"last_timestamp": 0, "tag_group_id": 0, "first_chunk": True}
+            last_tags_batch_info[t] = {'last_timestamp': 0, 'tag_group_id': 0, 'first_chunk': True}
 
-        log.info(f"--> {comp_name} Conversion started...")
-        ioffset = comp_status.get("ioffset", 0)
+        log.info(f'--> {comp_name} Conversion started...')
+        ioffset = comp_status.get('ioffset', 0)
         next_start_time = time_offset
         next_end_time = time_offset + chunk_time_size
         # Mark the first chunk to handle any initial conditions.
-        comp_status["is_first_chunk"] = True
+        comp_status['is_first_chunk'] = True
         while not is_last_chunk:
             # Adjust the chunk size if the end time is specified and the current chunk exceeds it.
             if end_time != -1 and next_end_time > end_time:
@@ -2875,44 +2953,41 @@ class HSDatalog:
                 next_end_time = end_time
 
             # Retrieve the data frame for the current chunk.
-            df = hsd.get_dataframe_batch(
-                comp_name, comp_status, next_start_time, next_end_time, True, raw_data
-            )
+            df = hsd.get_dataframe_batch(comp_name, comp_status, next_start_time, next_end_time, True, raw_data)
 
             # After the first chunk, update the status to no longer be the first chunk.
-            if comp_status["is_first_chunk"]:
-                comp_status["is_first_chunk"] = False
+            if comp_status['is_first_chunk']:
+                comp_status['is_first_chunk'] = False
 
             if start_time == next_start_time:
                 # Find the index of the row with the nearest timestamp to next_start_time
-                index = HSDatalog.find_nearest_idx(df["Time"].values, next_start_time)
+                index = HSDatalog.find_nearest_idx(df['Time'].values, next_start_time)
                 # Trim the DataFrame if specific start_time is selected
                 df = df.iloc[index:]
 
             if end_time == next_end_time:
                 if df is not None:
                     # Trim the DataFrame if specific end_time is selected
-                    index = HSDatalog.find_nearest_idx(df["Time"].values, next_end_time)
+                    index = HSDatalog.find_nearest_idx(df['Time'].values, next_end_time)
                     df = df.iloc[:index]
 
             # NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
-            if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value or (
-                comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value
-                and "odr" not in comp_status
+            if comp_status['c_type'] == ComponentTypeEnum.ALGORITHM.value or (
+                comp_status['c_type'] == ComponentTypeEnum.ACTUATOR.value and 'odr' not in comp_status
             ):
-                if comp_status.get("algorithm_type") == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
+                if comp_status.get('algorithm_type') == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
                     with_times = False
                 is_last_chunk = True
-                log.info("--> Conversion completed")
+                log.info('--> Conversion completed')
 
             if df is not None:
                 # If the data frame is empty, mark the last chunk and log completion.
                 if len(df) == 0:
                     is_last_chunk = True
-                    log.info("--> Conversion completed")
+                    log.info('--> Conversion completed')
                     break
                 else:
-                    log.debug("--> Chunk Conversion completed")
+                    log.debug('--> Chunk Conversion completed')
                     # Increment the time offset by the chunk time size for the next iteration.
                     next_start_time = float(df.iloc[-1, 0])
                     next_end_time = next_start_time + chunk_time_size
@@ -2922,16 +2997,14 @@ class HSDatalog:
                     # Select rows where none of the tags_columns have a value (untagged data).
                     untagged_df = df[~df[tags_columns].any(axis=1)]
                     # Drop tag columns from the untagged data frame.
-                    untagged_df = untagged_df.drop([f"{label}" for label in tags_columns], axis=1)
+                    untagged_df = untagged_df.drop([f'{label}' for label in tags_columns], axis=1)
                     # Determine the file mode ('write' for the first chunk,
                     # 'append' for subsequent chunks).
-                    wtype = "w" if first_untagged else "a"
+                    wtype = 'w' if first_untagged else 'a'
                     # Reset the flag after the first chunk of untagged data is processed.
                     first_untagged = False
                     # Convert the untagged data frame to the specified file format and save it.
-                    HSDatalogConverter.to_unico(
-                        untagged_file_path, untagged_df, out_format, wtype, True
-                    )
+                    HSDatalogConverter.to_unico(untagged_file_path, untagged_df, out_format, wtype, True)
 
                 max_time_gap = None
                 measodr = HSDatalog._get_measodr(comp_status)
@@ -2946,7 +3019,7 @@ class HSDatalog:
                 # Process groups for each Tag Class.
                 for tag_label in tags_columns:
                     # Create a column name for the group key based on the tag label.
-                    group_key_column = f"{tag_label}_group_key"
+                    group_key_column = f'{tag_label}_group_key'
                     # Group the data frame by the group key.
                     grouped = df.groupby(group_key_column)
 
@@ -2956,9 +3029,9 @@ class HSDatalog:
                         if group_df[tag_label].iloc[0]:
                             # Determine the file path for the tagged data based
                             # on the output folder.
-                            if output_folder != acquisition_path + "_Exported":
+                            if output_folder != acquisition_path + '_Exported':
                                 HSDatalog.__save_tag_group_in_file(
-                                    comp_name + "_" + acquisition_folder_name,
+                                    comp_name + '_' + acquisition_folder_name,
                                     group_df,
                                     tag_label,
                                     last_tags_batch_info,
@@ -2981,7 +3054,7 @@ class HSDatalog:
             else:
                 # If no data frame is returned, mark the last chunk.
                 is_last_chunk = True
-                log.info("--> Conversion completed")
+                log.info('--> Conversion completed')
 
         # Reset the status conversion side information for the component status.
         HSDatalog.reset_status_conversion_side_info(comp_status, ioffset)
@@ -3095,11 +3168,11 @@ class HSDatalog:
         """
 
         # Retrieve necessary parameters from the component status.
-        odr = comp_status.get("measodr")
+        odr = comp_status.get('measodr')
         if odr is None or odr == 0:
-            odr = comp_status.get("odr", 1)
-        spts = comp_status.get("samples_per_ts", 0)  # Samples per timestamp
-        io = comp_status.get("ioffset", 0)  # Initial offset
+            odr = comp_status.get('odr', 1)
+        spts = comp_status.get('samples_per_ts', 0)  # Samples per timestamp
+        io = comp_status.get('ioffset', 0)  # Initial offset
         # Extract the first timestamp (if spts == 0 --> first timestamp is the initial offset)
         first_timestamp = (spts / odr) + io
 
@@ -3113,12 +3186,12 @@ class HSDatalog:
         # Initialize the flag to determine if the current chunk is the last one.
         is_last_chunk = False
         # Mark the first chunk to handle any initial conditions.
-        comp_status["is_first_chunk"] = True
+        comp_status['is_first_chunk'] = True
         # Set the initial time offset to the start time or 0 if not provided.
         time_offset = start_time or 0
         # Initialize a flag to track if there were any errors during conversion.
         errors_in_conversion = False
-        log.info(f"--> {comp_name} Conversion started...")
+        log.info(f'--> {comp_name} Conversion started...')
         # Initialize a CSV writer for NanoEdge format.
         csv_writer = NanoedgeCSVWriter(output_folder, comp_name, signal_length, signal_increment)
         next_start_time = time_offset
@@ -3132,44 +3205,41 @@ class HSDatalog:
             # If chunk_size is 0, mark the last chunk and log completion.
             if chunk_size == 0:
                 is_last_chunk = 1
-                log.info(f"--> {comp_name} Nanoedge conversion completed successfully")
+                log.info(f'--> {comp_name} Nanoedge conversion completed successfully')
                 break
 
             # Retrieve the data frame for the current chunk.
-            df = hsd.get_dataframe_batch(
-                comp_name, comp_status, next_start_time, next_end_time, False, raw_data
-            )
+            df = hsd.get_dataframe_batch(comp_name, comp_status, next_start_time, next_end_time, False, raw_data)
 
             if start_time == next_start_time:
                 # Find the index of the row with the nearest timestamp to next_start_time
-                index = HSDatalog.find_nearest_idx(df["Time"].values, next_start_time)
+                index = HSDatalog.find_nearest_idx(df['Time'].values, next_start_time)
                 # Trim the DataFrame if specific start_time is selected
                 df = df.iloc[index:]
 
             if end_time == next_end_time:
                 if df is not None:
                     # Trim the DataFrame if specific end_time is selected
-                    index = HSDatalog.find_nearest_idx(df["Time"].values, next_end_time)
+                    index = HSDatalog.find_nearest_idx(df['Time'].values, next_end_time)
                     df = df.iloc[:index]
 
             # NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
-            if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value or (
-                comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value
-                and "odr" not in comp_status
+            if comp_status['c_type'] == ComponentTypeEnum.ALGORITHM.value or (
+                comp_status['c_type'] == ComponentTypeEnum.ACTUATOR.value and 'odr' not in comp_status
             ):
                 is_last_chunk = True
-                log.info("--> Conversion completed")
+                log.info('--> Conversion completed')
 
             if df is not None:
                 try:
-                    if not ("_ispu" in comp_name or "_mlc" in comp_name):
+                    if not ('_ispu' in comp_name or '_mlc' in comp_name):
                         # Write the data frame to NanoEdge format using the CSV writer.
                         # Use 'w' for write (first chunk) or 'a' for append (subsequent chunks).
-                        if comp_status["is_first_chunk"]:
-                            csv_writer.to_nanoedge_format_batch(df, "w", target_value)
-                            comp_status["is_first_chunk"] = False
+                        if comp_status['is_first_chunk']:
+                            csv_writer.to_nanoedge_format_batch(df, 'w', target_value)
+                            comp_status['is_first_chunk'] = False
                         else:
-                            csv_writer.to_nanoedge_format_batch(df, "a", target_value)
+                            csv_writer.to_nanoedge_format_batch(df, 'a', target_value)
                 except NanoEdgeConversionError:
                     # If an error occurs during conversion, set the error flag.
                     errors_in_conversion = True
@@ -3178,18 +3248,18 @@ class HSDatalog:
                     # Log an error message if there were errors, otherwise log
                     # successful completion.
                     if errors_in_conversion:
-                        log.error(f"--x ERRORS in {comp_name} Nanoedge conversion process")
+                        log.error(f'--x ERRORS in {comp_name} Nanoedge conversion process')
                     else:
                         # Flush any remaining data in the CSV writer.
                         csv_writer.flush()
-                        log.info(f"--> {comp_name} Nanoedge conversion completed successfully")
+                        log.info(f'--> {comp_name} Nanoedge conversion completed successfully')
                 else:
                     # Log an error message if there were errors, otherwise log
                     # successful chunk conversion.
                     if errors_in_conversion:
-                        log.error(f"--x ERRORS in {comp_name} chunk conversion")
+                        log.error(f'--x ERRORS in {comp_name} chunk conversion')
                     else:
-                        log.info(f"--> {comp_name} chunk conversion completed successfully")
+                        log.info(f'--> {comp_name} chunk conversion completed successfully')
                     # Increment the time offset for the next chunk.
                     next_start_time = float(df.iloc[-1, 0])
                     next_end_time = next_start_time + chunk_time_size
@@ -3197,12 +3267,12 @@ class HSDatalog:
                 # If no data frame is returned, mark the last chunk.
                 is_last_chunk = True
                 if errors_in_conversion:
-                    log.error(f"--x ERRORS in {comp_name} Nanoedge conversion process")
+                    log.error(f'--x ERRORS in {comp_name} Nanoedge conversion process')
                 else:
                     # Flush any remaining data in the CSV writer to ensure all
                     # data is written to the file.
                     csv_writer.flush()
-                    log.info(f"--> {comp_name} Nanoedge conversion completed successfully")
+                    log.info(f'--> {comp_name} Nanoedge conversion completed successfully')
 
         # Reset the status conversion side information for the component status.
         HSDatalog.reset_status_conversion_side_info(comp_status, io)
@@ -3277,7 +3347,7 @@ class HSDatalog:
         use_datalog_tags,
         output_folder,
         out_format,
-        columns_labels="default",
+        columns_labels='default',
         with_times=False,
         raw_data=False,
         chunk_size=DEFAULT_SAMPLES_CHUNK_SIZE,
@@ -3324,15 +3394,15 @@ class HSDatalog:
         comp_status = c[comp_name]
 
         if (
-            comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value
-            and comp_status.get("algorithm_type") == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value
+            comp_status['c_type'] == ComponentTypeEnum.ALGORITHM.value
+            and comp_status.get('algorithm_type') == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value
         ):
             with_times = False
 
         # Start the conversion log.
         if len(components) == 1:
             comp_name = list(components[0].keys())[0]
-            log.info(f"--> {comp_name} Conversion started...")
+            log.info(f'--> {comp_name} Conversion started...')
         else:
             return HSDatalog.__convert_to_unico_agg_format_batch(
                 hsd,
@@ -3342,7 +3412,7 @@ class HSDatalog:
                 use_datalog_tags,
                 output_folder,
                 out_format,
-                "same_sensor",
+                'same_sensor',
                 columns_labels,
                 with_times,
                 False,
@@ -3356,11 +3426,11 @@ class HSDatalog:
         # Set the initial time offset to the start time or 0 if not provided.
         time_offset = start_time or 0
 
-        ioffset = comp_status.get("ioffset", 0)
+        ioffset = comp_status.get('ioffset', 0)
         next_start_time = time_offset
         next_end_time = time_offset + chunk_time_size
         # Mark the first chunk to handle any initial conditions.
-        comp_status["is_first_chunk"] = True
+        comp_status['is_first_chunk'] = True
         file_name = comp_name
         while not is_last_chunk:
             # Adjust the chunk size if the end time is specified and the current chunk exceeds it.
@@ -3375,76 +3445,69 @@ class HSDatalog:
 
             if start_time == next_start_time:
                 # Find the index of the row with the nearest timestamp to next_start_time
-                index = HSDatalog.find_nearest_idx(df["Time"].values, next_start_time)
+                index = HSDatalog.find_nearest_idx(df['Time'].values, next_start_time)
                 # Trim the DataFrame if specific start_time is selected
                 df = df.iloc[index:]
 
             if end_time == next_end_time:
                 if df is not None:
                     # Trim the DataFrame if specific end_time is selected
-                    index = HSDatalog.find_nearest_idx(df["Time"].values, next_end_time)
+                    index = HSDatalog.find_nearest_idx(df['Time'].values, next_end_time)
                     df = df.iloc[:index]
 
             # NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
-            if comp_status["c_type"] == ComponentTypeEnum.ALGORITHM.value or (
-                comp_status["c_type"] == ComponentTypeEnum.ACTUATOR.value
-                and "odr" not in comp_status
+            if comp_status['c_type'] == ComponentTypeEnum.ALGORITHM.value or (
+                comp_status['c_type'] == ComponentTypeEnum.ACTUATOR.value and 'odr' not in comp_status
             ):
                 is_last_chunk = True
-                log.info("--> Conversion completed")
+                log.info('--> Conversion completed')
 
             # After the first chunk, update the status to no longer be the first chunk.
-            if comp_status["is_first_chunk"]:
-                comp_status["is_first_chunk"] = False
+            if comp_status['is_first_chunk']:
+                comp_status['is_first_chunk'] = False
 
             if df is not None:
-                if columns_labels == "mlc_tool":
-                    cols_to_exclude = ["Time"]
+                if columns_labels == 'mlc_tool':
+                    cols_to_exclude = ['Time']
                     # Define a prefix to add to column names based on the component name.
-                    prefix = f"{comp_name}"
+                    prefix = f'{comp_name}'
                     new_names = {}
-                    new_names["Time"] = "Time[s]"
+                    new_names['Time'] = 'Time[s]'
                     if use_datalog_tags:
                         tags = HSDatalog.get_time_tags(hsd)
-                        tag_labels = set([info["label"] for info in tags])
+                        tag_labels = set([info['label'] for info in tags])
                         for t in tag_labels:
                             cols_to_exclude.append(t)
                     for col in df.columns:
                         if col not in cols_to_exclude:
-                            sensor_type_str = col.split(" ")[0]
+                            sensor_type_str = col.split(' ')[0]
                             # Create a dictionary of column name mappings with the new prefix.
-                            if "_" in sensor_type_str:
+                            if '_' in sensor_type_str:
                                 new_col_name = (
-                                    prefix
-                                    + "_"
-                                    + sensor_type_str.split("_")[-1]
-                                    + " "
-                                    + df.columns[1].split(" ")[-1]
+                                    prefix + '_' + sensor_type_str.split('_')[-1] + ' ' + df.columns[1].split(' ')[-1]
                                 )
                             else:
-                                new_col_name = prefix + " " + df.columns[1].split(" ")[-1]
+                                new_col_name = prefix + ' ' + df.columns[1].split(' ')[-1]
                             new_names[col] = new_col_name
                     # Rename columns in the dataframe according to the new names mapping.
                     df = df.rename(columns=new_names)
                 # Determine the file mode ('write' for the first chunk,
                 # 'append' for subsequent chunks) and file name.
                 if is_first_chunk:
-                    file_mode = "w"
+                    file_mode = 'w'
                     is_first_chunk = False
                     file_name = comp_name
                 else:
-                    file_mode = "a"
+                    file_mode = 'a'
                 file_path = os.path.join(output_folder, file_name)
                 # Convert the data frame to the specified file format and save it.
-                HSDatalogConverter.to_unico(
-                    file_path, df, out_format, file_mode, with_times, columns_labels
-                )
+                HSDatalogConverter.to_unico(file_path, df, out_format, file_mode, with_times, columns_labels)
                 # If the data frame is empty, mark the last chunk and log completion.
                 if len(df) == 0:
                     is_last_chunk = True
-                    log.info(f"--> {file_name} ST UNICO format conversion completed successfully")
+                    log.info(f'--> {file_name} ST UNICO format conversion completed successfully')
                 else:
-                    log.debug("--> Chunk Conversion completed")
+                    log.debug('--> Chunk Conversion completed')
                     # Increment the time offset by the chunk time size for the next iteration.
                     # This sets up the start time for the next chunk.
                     next_start_time = float(df.iloc[-1, 0])
@@ -3454,7 +3517,7 @@ class HSDatalog:
                 # If no data frame is returned, mark the last chunk.
                 # This could happen if there is no more data to process or if an error occurred.
                 is_last_chunk = True
-                log.info("--> Conversion completed")
+                log.info('--> Conversion completed')
 
         # Reset the status conversion side information for the component status.
         HSDatalog.reset_status_conversion_side_info(comp_status, ioffset)
@@ -3469,7 +3532,7 @@ class HSDatalog:
         output_folder,
         out_format,
         aggregation,
-        columns_labels="default",
+        columns_labels='default',
         with_times=False,
         with_untagged=False,
         raw_data=False,
@@ -3519,27 +3582,21 @@ class HSDatalog:
 
         # If aggregation is "split_per_tags", force use_datalog_tags to True
         # and prepare for untagged data.
-        if aggregation == "split_per_tags":
+        if aggregation == 'split_per_tags':
             use_datalog_tags = True
-            last_tags_batch_info = (
-                {}
-            )  # Dictionary to store the last timestamp and tag group index for each tag.
+            last_tags_batch_info = {}  # Dictionary to store the last timestamp and tag group index for each tag.
             if with_untagged:
                 first_untagged = True  # Flag to indicate if it's the first batch of untagged data.
-                untagged_sub_folder = os.path.join(
-                    output_folder, "untagged"
-                )  # Sub-folder for untagged data.
-                os.makedirs(
-                    untagged_sub_folder, exist_ok=True
-                )  # Create the sub-folder if it doesn't exist.
+                untagged_sub_folder = os.path.join(output_folder, 'untagged')  # Sub-folder for untagged data.
+                os.makedirs(untagged_sub_folder, exist_ok=True)  # Create the sub-folder if it doesn't exist.
                 untagged_file_path = os.path.join(
-                    untagged_sub_folder, "untagged_Aggregated_dataLog"
+                    untagged_sub_folder, 'untagged_Aggregated_dataLog'
                 )  # Path for untagged data file.
 
         # Initialize flags for batch processing.
         is_last_chunk = False
         is_first_chunck = True
-        log.info(f"--> {output_folder} Unico Conversion started (with aggregated data)...")
+        log.info(f'--> {output_folder} Unico Conversion started (with aggregated data)...')
 
         # Initialize variables for processing.
         tot_axes = 0  # Total number of axes across all components.
@@ -3547,37 +3604,34 @@ class HSDatalog:
         comp_status = []  # List to store component statuses.
         ioffsets = []
 
-        original_labels = ["Time"]
+        original_labels = ['Time']
 
         for c in components:
             comp_name = list(c.keys())[0]
             comp_columns = hsd.get_component_columns_names(c[comp_name], comp_name)
 
-            if columns_labels == "mlc_tool":
-                dim = c[comp_name].get("dim", 1)
+            if columns_labels == 'mlc_tool':
+                dim = c[comp_name].get('dim', 1)
                 if dim > 1:
                     # Define a prefix to add to column names
-                    prefix = f"{list(c.keys())[0]}_"
+                    prefix = f'{list(c.keys())[0]}_'
                     # Create a dictionary of column name mappings
                     original_labels.extend(
-                        [
-                            prefix + col.split(" ")[0].split("_")[-1] + " " + col.split(" ")[-1]
-                            for col in comp_columns
-                        ]
+                        [prefix + col.split(' ')[0].split('_')[-1] + ' ' + col.split(' ')[-1] for col in comp_columns]
                     )
                 else:
                     # Define a prefix to add to column names
-                    prefix = f"{list(c.keys())[0]}"
-                    original_labels.append(prefix + " " + comp_columns[0].split(" ")[-1])
+                    prefix = f'{list(c.keys())[0]}'
+                    original_labels.append(prefix + ' ' + comp_columns[0].split(' ')[-1])
             else:
                 # Define a prefix to add to column names
-                suffix = f"_{list(c.keys())[0]}"
+                suffix = f'_{list(c.keys())[0]}'
                 # Create a dictionary of column name mappings
                 original_labels.extend([col + suffix for col in comp_columns])
 
         if use_datalog_tags:
             tags = HSDatalog.get_time_tags(hsd)
-            tag_labels = set([info["label"] for info in tags])
+            tag_labels = set([info['label'] for info in tags])
             original_labels.extend(list(tag_labels))
 
         # Find the maximum initial offset across all components.
@@ -3590,7 +3644,7 @@ class HSDatalog:
         # data rate (odr), in descending order.
         sorted_components = sorted(
             components,
-            key=lambda c: c[list(c.keys())[0]].get("measodr", c[list(c.keys())[0]].get("odr", 1)),
+            key=lambda c: c[list(c.keys())[0]].get('measodr', c[list(c.keys())[0]].get('odr', 1)),
             reverse=True,
         )
         # Get the component with the fastest output data rate.
@@ -3618,10 +3672,10 @@ class HSDatalog:
         for i, c in enumerate(sorted_components):
             comp_names.append(list(c.keys())[0])
             comp_status.append(c[comp_names[-1]])
-            tot_axes += c[comp_names[-1]].get("dim", 1)
-            ioffsets.append(comp_status[-1].get("ioffset", 0))
+            tot_axes += c[comp_names[-1]].get('dim', 1)
+            ioffsets.append(comp_status[-1].get('ioffset', 0))
             # Mark the first chunk to handle any initial conditions.
-            comp_status[-1]["is_first_chunk"] = True
+            comp_status[-1]['is_first_chunk'] = True
 
         next_start_time = time_offset
         next_end_time = time_offset + chunk_time_size
@@ -3643,37 +3697,33 @@ class HSDatalog:
                     )
 
                     # NO BATCHES FOR OLD VERSION OF ACTUATORS WITHOUT ODR AND ALGORITHMS
-                    if comp_status[i]["c_type"] == ComponentTypeEnum.ALGORITHM.value or (
-                        comp_status[i]["c_type"] == ComponentTypeEnum.ACTUATOR.value
-                        and "odr" not in comp_status[i]
+                    if comp_status[i]['c_type'] == ComponentTypeEnum.ALGORITHM.value or (
+                        comp_status[i]['c_type'] == ComponentTypeEnum.ACTUATOR.value and 'odr' not in comp_status[i]
                     ):
-                        if (
-                            comp_status[i].get("algorithm_type")
-                            == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value
-                        ):
+                        if comp_status[i].get('algorithm_type') == AlgorithmTypeEnum.IALGORITHM_TYPE_FFT.value:
                             with_times = False
                         is_last_chunk = True
-                        log.info("--> Conversion completed")
+                        log.info('--> Conversion completed')
 
                     if df is not None:
                         # Check if this is the last chunk based on the end time
                         # and the last timestamp in the dataframe.
                         if end_time != -1 and df.iloc[-1, 0] >= end_time:
                             is_last_chunk = True
-                            log.info("--> Conversion completed")
+                            log.info('--> Conversion completed')
 
                         if tags_columns_count == -1:
                             # Determine the number of tag columns in the dataframe.
                             tags_columns = HSDatalog.get_acquisition_label_classes(
                                 hsd
                             )  # Retrieve tag columns from the HSDatalog instance.
-                            if aggregation == "split_per_tags" and last_tags_batch_info == {}:
+                            if aggregation == 'split_per_tags' and last_tags_batch_info == {}:
                                 # Initialize last_tags_batch_info for each tag column.
                                 for t in tags_columns:
                                     last_tags_batch_info[t] = {
-                                        "last_timestamp": 0,
-                                        "tag_group_id": 0,
-                                        "first_chunk": True,
+                                        'last_timestamp': 0,
+                                        'tag_group_id': 0,
+                                        'first_chunk': True,
                                     }
                 else:
                     # Retrieve the data frame for subsequent components within the same chunk.
@@ -3687,8 +3737,8 @@ class HSDatalog:
                     )
 
                 # After the first chunk, update the status to no longer be the first chunk.
-                if comp_status[i]["is_first_chunk"]:
-                    comp_status[i]["is_first_chunk"] = False
+                if comp_status[i]['is_first_chunk']:
+                    comp_status[i]['is_first_chunk'] = False
 
                 if df is None:
                     # If no data frame is retrieved, clear the list and break the loop.
@@ -3716,50 +3766,41 @@ class HSDatalog:
                         comp_name, comp_dataframes[0], columns_labels, list(tags_columns)
                     )
 
-                if columns_labels == "mlc_tool":
-                    df = df.rename(columns={"Time": "Time[s]"})
+                if columns_labels == 'mlc_tool':
+                    df = df.rename(columns={'Time': 'Time[s]'})
 
                 if df is not None:
                     # If the merged data frame is not empty, proceed to save it.
-                    if aggregation == "single_file" or aggregation == "same_sensor":
+                    if aggregation == 'single_file' or aggregation == 'same_sensor':
                         # If using single file aggregation, determine the file mode.
                         if is_first_chunck:
-                            file_mode = "w"
+                            file_mode = 'w'
                             is_first_chunck = False
                         else:
-                            file_mode = "a"
+                            file_mode = 'a'
 
                         acquisition_folder_name = os.path.basename(acquisition_path)
                         # Construct the file path for the aggregated data.
-                        if aggregation == "same_sensor":  # If aggregation is "same_sensor"
+                        if aggregation == 'same_sensor':  # If aggregation is "same_sensor"
                             s_name, _ = FileManager.decode_file_name(list(components[0].keys())[0])
                             file_path = os.path.join(output_folder, s_name)
                         else:  # If aggregation is "single_file", save the merged
                             # dataframe as a single file
-                            file_path = os.path.join(
-                                output_folder, f"Aggregated_{acquisition_folder_name}"
-                            )
+                            file_path = os.path.join(output_folder, f'Aggregated_{acquisition_folder_name}')
                         # Convert the data frame to the specified file format and save it.
-                        HSDatalogConverter.to_unico(
-                            file_path, df, out_format, file_mode, with_times, columns_labels
-                        )
-                    elif aggregation == "split_per_tags":
+                        HSDatalogConverter.to_unico(file_path, df, out_format, file_mode, with_times, columns_labels)
+                    elif aggregation == 'split_per_tags':
                         # If using tag-based splitting, handle untagged and tagged data separately.
                         if with_untagged:
-
                             # Process untagged data.
-                            untagged_df = df[
-                                ~df[tags_columns].any(axis=1)
-                            ]  # Filter out rows with any tag set to True.
+                            untagged_df = df[~df[tags_columns].any(axis=1)]  # Filter out rows with any tag set to True.
                             # Drop tag columns
-                            untagged_df = untagged_df.drop(
-                                [f"{label}" for label in tags_columns], axis=1
-                            )
+                            untagged_df = untagged_df.drop([f'{label}' for label in tags_columns], axis=1)
                             if first_untagged:
-                                wtype = "w"
+                                wtype = 'w'
                                 first_untagged = False
                             else:
-                                wtype = "a"
+                                wtype = 'a'
                             HSDatalogConverter.to_unico(
                                 untagged_file_path,
                                 untagged_df,
@@ -3785,18 +3826,16 @@ class HSDatalog:
 
                         # Process groups for each Tag Class
                         for tag_label in tags_columns:
-                            group_key_column = f"{tag_label}_group_key"
+                            group_key_column = f'{tag_label}_group_key'
                             grouped = df.groupby(group_key_column)
 
                             for group_key, group_df in grouped:
-                                log.debug(f"Processing group {group_key} for tag {tag_label}")
+                                log.debug(f'Processing group {group_key} for tag {tag_label}')
                                 if group_df[tag_label].iloc[0]:
-                                    log.debug(
-                                        f"- Tag {tag_label} is True. Processing group {group_key}"
-                                    )
+                                    log.debug(f'- Tag {tag_label} is True. Processing group {group_key}')
                                     # Save each group of tagged data to a separate file.
                                     HSDatalog.__save_tag_group_in_file(
-                                        "Aggregated",
+                                        'Aggregated',
                                         group_df,
                                         tag_label,
                                         last_tags_batch_info,
@@ -3807,27 +3846,25 @@ class HSDatalog:
                                         columns_labels,
                                     )
                                 else:
-                                    log.debug(
-                                        f"- Tag {tag_label} is False. Skipping group {group_key}"
-                                    )
+                                    log.debug(f'- Tag {tag_label} is False. Skipping group {group_key}')
 
                     # If the data frame is empty, mark the last chunk and log completion.
                     if len(df) == 0:
                         is_last_chunk = True
-                        log.info("--> Conversion completed")
+                        log.info('--> Conversion completed')
                     else:
-                        log.debug("--> Chunk Conversion completed")
+                        log.debug('--> Chunk Conversion completed')
                         # Increment the time offset for the next chunk.
                         next_start_time = float(df.iloc[-1, 0])
                         next_end_time = next_start_time + chunk_time_size
                 else:
                     # If no data frame is returned, mark the last chunk.
                     is_last_chunk = True
-                    log.info("--> Conversion completed")
+                    log.info('--> Conversion completed')
             else:
                 # If no data frame is returned, mark the last chunk.
                 is_last_chunk = True
-                log.info("--> Conversion completed")
+                log.info('--> Conversion completed')
 
         # Reset the status conversion side information for the components statuses.
         for i, c in enumerate(sorted_components):
@@ -3842,7 +3879,7 @@ class HSDatalog:
         use_datalog_tags,
         output_folder,
         out_format,
-        columns_labels="default",
+        columns_labels='default',
         with_times=False,
         raw_data=False,
         chunk_size=DEFAULT_SAMPLES_CHUNK_SIZE,
@@ -3902,7 +3939,7 @@ class HSDatalog:
         use_datalog_tags,
         output_folder,
         out_format,
-        columns_labels="default",
+        columns_labels='default',
         with_times=False,
         with_untagged=False,
         raw_data=False,
@@ -4002,17 +4039,17 @@ class HSDatalog:
         """
         try:
             # Extract the number of channels and output data rate (ODR) from the component status.
-            n_channels = comp_status.get("dim")
-            odr = comp_status.get("odr")
-            ioffset = comp_status.get("ioffset")
-            log.info(f"Sensor: {comp_name} (ODR: {odr})")
+            n_channels = comp_status.get('dim')
+            odr = comp_status.get('odr')
+            ioffset = comp_status.get('ioffset')
+            log.info(f'Sensor: {comp_name} (ODR: {odr})')
 
             # Generate the file path for the WAV file to be created.
             wav_file_path = HSDatalog.get_wav_file_path(hsd, comp_name, output_folder)
             # Validate the ODR and create the WAV file.
             if odr is None or odr <= 0:
-                log.exception("Bad framerate selected for this sensor")
-                raise ValueError("ODR must be a positive number")
+                log.exception('Bad framerate selected for this sensor')
+                raise ValueError('ODR must be a positive number')
 
             wav_file = HSDatalogConverter.wav_create(wav_file_path, odr, n_channels)
 
@@ -4022,11 +4059,11 @@ class HSDatalog:
             is_last_chunk = False
             time_offset = start_time or 0
 
-            log.info(f"--> {comp_name} Conversion started...")
+            log.info(f'--> {comp_name} Conversion started...')
             next_start_time = time_offset
             next_end_time = time_offset + chunk_time_size
 
-            comp_status["is_first_chunk"] = True
+            comp_status['is_first_chunk'] = True
             while not is_last_chunk:
                 # Adjust the chunk size if the end time is specified and the
                 # current chunk exceeds it.
@@ -4043,12 +4080,12 @@ class HSDatalog:
                 )
 
                 # After the first chunk, update the status to no longer be the first chunk.
-                if comp_status["is_first_chunk"]:
-                    comp_status["is_first_chunk"] = False
+                if comp_status['is_first_chunk']:
+                    comp_status['is_first_chunk'] = False
 
                 if res is None:
                     HSDatalogConverter.wav_close(wav_file)
-                    log.exception("No data from selected sensor")
+                    log.exception('No data from selected sensor')
                     break
 
                 data = res[0]
@@ -4058,7 +4095,7 @@ class HSDatalog:
                     # Convert the data to PCM format and append to the WAV file.
                     pcm_data = data.astype(np.int16)
                     HSDatalogConverter.wav_append(wav_file, pcm_data)
-                    log.info(f"--> File {wav_file_path} converted chunk appended successfully")
+                    log.info(f'--> File {wav_file_path} converted chunk appended successfully')
 
                     # Update the start time for the next chunk.
                     next_start_time = res[1][-1][0]
@@ -4066,12 +4103,12 @@ class HSDatalog:
 
             # Close the WAV file after all chunks have been processed.
             HSDatalogConverter.wav_close(wav_file)
-            log.info(f"--> {comp_name} Conversion completed")
+            log.info(f'--> {comp_name} Conversion completed')
         except Exception as err:
             # Handle any exceptions that occur during the conversion process.
             log.exception(err)
             # Close the WAV file in case of an exception.
-            if "wav_file" in locals():
+            if 'wav_file' in locals():
                 HSDatalogConverter.wav_close(wav_file)
 
         # Reset the status conversion side information for the component status.
@@ -4113,9 +4150,7 @@ class HSDatalog:
         tagging system.
         """
 
-        def save_tag_group_in_wav(
-            group_df, tag_label, tag_info, tags_columns, output_folder, wav_file=None
-        ):
+        def save_tag_group_in_wav(group_df, tag_label, tag_info, tags_columns, output_folder, wav_file=None):
             """
             Saves a group of data associated with a specific tag into a WAV file.
 
@@ -4134,9 +4169,9 @@ class HSDatalog:
             :return: The WAV file object.
             """
             # Drop tag columns and group key columns from the dataframe.
-            group_df = group_df.drop([f"{label}" for label in tags_columns], axis=1)
-            group_df = group_df.drop([f"{label}_group_key" for label in tags_columns], axis=1)
-            group_df.drop("Time", axis=1, inplace=True)
+            group_df = group_df.drop([f'{label}' for label in tags_columns], axis=1)
+            group_df = group_df.drop([f'{label}_group_key' for label in tags_columns], axis=1)
+            group_df.drop('Time', axis=1, inplace=True)
 
             # Convert the remaining dataframe to numpy array for WAV data.
             pcm_data = group_df.to_numpy()
@@ -4148,18 +4183,17 @@ class HSDatalog:
             # Construct the file path for the WAV file.
             acquisition_folder_name = os.path.basename(acquisition_path)
             label_file_name = (
-                f"{tag_label}_{comp_name}_{acquisition_folder_name}_"
-                f"{tag_info[tag_label]['tag_group_id']}.wav"
+                f'{tag_label}_{comp_name}_{acquisition_folder_name}_{tag_info[tag_label]["tag_group_id"]}.wav'
             )
             label_file_path = os.path.join(tag_sub_folder, label_file_name)
 
             # Create a new WAV file or append to an existing one.
             # Determine the file mode ('write' for the first chunk,
             # 'append' for subsequent chunks).
-            if tag_info[tag_label]["first_chunk"]:
+            if tag_info[tag_label]['first_chunk']:
                 wav_file = HSDatalogConverter.wav_create(label_file_path, odr, n_channels)
                 HSDatalogConverter.wav_append(wav_file, pcm_data)
-                tag_info[tag_label]["first_chunk"] = False
+                tag_info[tag_label]['first_chunk'] = False
             else:
                 HSDatalogConverter.wav_append(wav_file, pcm_data)
             return wav_file
@@ -4167,14 +4201,14 @@ class HSDatalog:
         try:
             # Retrieve the acquisition path and sensor details.
             acquisition_path = hsd.get_acquisition_path()
-            n_channels = comp_status.get("dim")
-            odr = comp_status.get("odr")
-            ioffset = comp_status.get("ioffset")
-            log.info(f"Sensor: {comp_name} (ODR: {odr})")
+            n_channels = comp_status.get('dim')
+            odr = comp_status.get('odr')
+            ioffset = comp_status.get('ioffset')
+            log.info(f'Sensor: {comp_name} (ODR: {odr})')
 
             # Validate the ODR and number of channels.
             if odr is None or odr <= 0:
-                log.exception("Invalid ODR value for this sensor")
+                log.exception('Invalid ODR value for this sensor')
                 raise
             if n_channels is None:
                 log.exception("Missing 'dim' property in your device status")
@@ -4194,18 +4228,18 @@ class HSDatalog:
             wav_files = {}
             for t in tags_columns:
                 last_tags_batch_info[t] = {
-                    "last_timestamp": 0,
-                    "tag_group_id": 0,
-                    "first_chunk": True,
+                    'last_timestamp': 0,
+                    'tag_group_id': 0,
+                    'first_chunk': True,
                 }
                 wav_files[t] = {}
 
-            log.info(f"--> {comp_name} Conversion started...")
+            log.info(f'--> {comp_name} Conversion started...')
             next_start_time = time_offset
             next_end_time = time_offset + chunk_time_size
 
             # Mark the first chunk to handle any initial conditions.
-            comp_status["is_first_chunk"] = True
+            comp_status['is_first_chunk'] = True
             # Process data in chunks until the last chunk is reached.
             while not is_last_chunk:
                 # Adjust the chunk size if the end time is specified and the current
@@ -4221,24 +4255,24 @@ class HSDatalog:
 
                 if start_time == next_start_time:
                     # Find the index of the row with the nearest timestamp to next_start_time
-                    index = HSDatalog.find_nearest_idx(df["Time"].values, next_start_time)
+                    index = HSDatalog.find_nearest_idx(df['Time'].values, next_start_time)
                     # Trim the DataFrame if specific start_time is selected
                     df = df.iloc[index:]
 
                 if end_time == next_end_time:
                     if df is not None:
                         # Trim the DataFrame if specific end_time is selected
-                        index = HSDatalog.find_nearest_idx(df["Time"].values, next_end_time)
+                        index = HSDatalog.find_nearest_idx(df['Time'].values, next_end_time)
                         df = df.iloc[:index]
 
                 if df is not None:
                     # If the data frame is empty, mark the last chunk and log completion.
                     if len(df) == 0:
                         is_last_chunk = True
-                        log.info("--> Conversion completed")
+                        log.info('--> Conversion completed')
                         break
                     else:
-                        log.debug("--> Chunk Conversion completed")
+                        log.debug('--> Chunk Conversion completed')
                         # Increment the time offset by the chunk time size for the next iteration.
                         next_start_time = float(df.iloc[-1, 0])
                         next_end_time = next_start_time + chunk_time_size
@@ -4260,7 +4294,7 @@ class HSDatalog:
 
                     # Process groups for each Tag Class and save them into separate WAV files.
                     for tag_label in tags_columns:
-                        group_key_column = f"{tag_label}_group_key"
+                        group_key_column = f'{tag_label}_group_key'
                         grouped = df.groupby(group_key_column)
 
                         for _, group_df in grouped:
@@ -4268,31 +4302,24 @@ class HSDatalog:
                                 # Calculate the expected next timestamp for the current tag group.
                                 tag_batch_first_time = group_df.iloc[0, 0]
                                 tag_batch_last_time = group_df.iloc[-1, 0]
-                                tag_batch_sample_time = (
-                                    tag_batch_last_time - tag_batch_first_time
-                                ) / len(group_df)
+                                tag_batch_sample_time = (tag_batch_last_time - tag_batch_first_time) / len(group_df)
 
                                 # Check if there is a significant gap since the last timestamp,
                                 # indicating a new tag group.
-                                if last_tags_batch_info[tag_label]["last_timestamp"] != 0:
+                                if last_tags_batch_info[tag_label]['last_timestamp'] != 0:
                                     exp_next_time = round(
-                                        (
-                                            last_tags_batch_info[tag_label]["last_timestamp"]
-                                            + tag_batch_sample_time
-                                        ),
+                                        (last_tags_batch_info[tag_label]['last_timestamp'] + tag_batch_sample_time),
                                         6,
                                     )
 
                                     # If gap is more than 0.5 seconds, start a new file.
                                     if tag_batch_first_time > exp_next_time + 0.5:
-                                        last_tags_batch_info[tag_label]["tag_group_id"] += 1
-                                        last_tags_batch_info[tag_label]["first_chunk"] = True
+                                        last_tags_batch_info[tag_label]['tag_group_id'] += 1
+                                        last_tags_batch_info[tag_label]['first_chunk'] = True
 
                                 # Update the last timestamp for the current tag group.
-                                last_tags_batch_info[tag_label][
-                                    "last_timestamp"
-                                ] = tag_batch_last_time
-                                group_id = last_tags_batch_info[tag_label]["tag_group_id"]
+                                last_tags_batch_info[tag_label]['last_timestamp'] = tag_batch_last_time
+                                group_id = last_tags_batch_info[tag_label]['tag_group_id']
 
                                 # Save the current group of data to a WAV file, either by creating a
                                 # new file or appending to an existing one.
@@ -4316,13 +4343,13 @@ class HSDatalog:
                 else:
                     # If no data frame is returned, mark the last chunk.
                     is_last_chunk = True
-                    log.info("--> Conversion completed")
+                    log.info('--> Conversion completed')
 
             # Close all the WAV files that were created during the conversion process.
             for tag_label, group_files in wav_files.items():
                 for group_id, wav_file in group_files.items():
                     HSDatalogConverter.wav_close(wav_file)
-            log.info(f"--> {comp_name} Conversion completed")
+            log.info(f'--> {comp_name} Conversion completed')
 
         except Exception as err:
             # Log any exceptions that occur during the conversion process and ensure all
@@ -4377,7 +4404,7 @@ class HSDatalog:
         c_status = component[c_name]
 
         # Set the sensitivity for the conversion to 1 to force raw data processing.
-        c_status["sensitivity"] = 1
+        c_status['sensitivity'] = 1
 
         # If 'split_per_tags' is True, convert the data into separate WAV files for each tag group.
         if split_per_tags:
@@ -4385,9 +4412,7 @@ class HSDatalog:
                 hsd, c_name, c_status, start_time, end_time, output_folder, chunk_size
             )
         else:  # Otherwise, convert the entire component's data into a single WAV file.
-            HSDatalog.__convert_to_wav_batch(
-                hsd, c_name, c_status, start_time, end_time, output_folder, chunk_size
-            )
+            HSDatalog.__convert_to_wav_batch(hsd, c_name, c_status, start_time, end_time, output_folder, chunk_size)
 
     @staticmethod
     def plot(
@@ -4425,11 +4450,11 @@ class HSDatalog:
 
         comp_name = list(component.keys())[0]
         comp_status = component[comp_name]
-        ioffset = comp_status.get("ioffset", 0)
+        ioffset = comp_status.get('ioffset', 0)
         c_type = None
-        if "c_type" in comp_status:
-            c_type = comp_status["c_type"]
-            comp_status["is_first_chunk"] = True
+        if 'c_type' in comp_status:
+            c_type = comp_status['c_type']
+            comp_status['is_first_chunk'] = True
             if c_type == ComponentTypeEnum.SENSOR.value:
                 hsd.get_sensor_plot(
                     comp_name,
@@ -4518,17 +4543,17 @@ class HSDatalog:
         """
         # Issue a deprecation warning to inform users that this function is deprecated.
         warn(
-            "get_ssensor_file_name is deprecated and will be removed in a future version. "
+            'get_ssensor_file_name is deprecated and will be removed in a future version. '
             "Use '__get_sensor_file_path' instead.",
             DeprecationWarning,
         )
         # Check if the HSDatalog instance is of version 2.
         if isinstance(hsd, HSDatalog_v2):
             # For HSDatalog_v2, return the file path using only the smart sensor name.
-            return os.path.join(output_folder, f"{ssensor_name}")
+            return os.path.join(output_folder, f'{ssensor_name}')
         else:
             # For HSDatalog_v1, include both the smart sensor name and type in the file path.
-            return os.path.join(output_folder, f"{ssensor_name}_{ssensor_type}")
+            return os.path.join(output_folder, f'{ssensor_name}_{ssensor_type}')
 
     @staticmethod
     def get_wav_file_path(hsd, comp_name, output_folder):
@@ -4548,7 +4573,7 @@ class HSDatalog:
         """
         # Intentionally not using 'hsd' parameter
         _ = hsd  # unused
-        return os.path.join(output_folder, f"{comp_name}.wav")
+        return os.path.join(output_folder, f'{comp_name}.wav')
 
     @staticmethod
     def get_wav_file_name(hsd, ssensor_name, ssensor_type, output_folder):
@@ -4570,7 +4595,7 @@ class HSDatalog:
         """
         # Issue a deprecation warning to inform users that this function is deprecated.
         warn(
-            "get_wav_file_name is deprecated and will be removed in a future version. "
+            'get_wav_file_name is deprecated and will be removed in a future version. '
             "Use 'get_ssensor_file_name' instead.",
             DeprecationWarning,
         )
@@ -4578,8 +4603,8 @@ class HSDatalog:
         if isinstance(hsd, HSDatalog_v2):
             # For HSDatalog_v2, return the file path using only the smart
             # sensor name with a '.wav' extension.
-            return os.path.join(output_folder, f"{ssensor_name}.wav")
+            return os.path.join(output_folder, f'{ssensor_name}.wav')
         else:
             # For HSDatalog_v1, include both the smart sensor name and type
             # in the file path with a '.wav' extension.
-            return os.path.join(output_folder, f"{ssensor_name}_{ssensor_type}.wav")
+            return os.path.join(output_folder, f'{ssensor_name}_{ssensor_type}.wav')

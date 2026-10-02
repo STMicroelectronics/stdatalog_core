@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "name": "schema_vl53l9_v1",
+  "description": "VL53L9 multizone time-of-flight output with runtime-selected matrix dimensions.",
+  "layout": {
+    "rows": [
+      {"row": 0, "columns": [
+        {"column": 0, "paths": ["target_distance.distance", "target_distance.flag"], "span": 2, "row_span": 2},
+        {"column": 2, "paths": ["target_amplitude", "target_ambient", "target_dss"]}
+      ]},
+      {"row": 1, "columns": [
+        {"column": 2, "path": "target_distance.distance:histogram"}
+      ]}
+    ],
+    "sections": [
+      {
+        "label": "Status line",
+        "row_height": 220,
+        "rows": [
+          {"row": 0, "columns": [{"column": 0, "path": "status_line.frame_counter"}]},
+          {"row": 1, "columns": [
+            {"column": 0, "path": "status_line.temperature"},
+            {"column": 1, "path": "status_line.ldd_temperature"}
+          ]}
+        ],
+        "paths": ["status_line"]
+      }
+    ]
+  },
+  "outputs": [
+    {
+      "kind": "matrix",
+      "name": "target_distance",
+      "rows": 8,
+      "columns": 8,
+      "fields": [
+        {"name": "distance", "type": "uint", "bits": 15, "unit": "mm", "role": "distance", "visualization": ["heatmap", "histogram"], "visualization_layout": "horizontal"},
+        {"name": "flag", "type": "bool", "bits": 1, "role": "distance_flag", "visualization": ["heatmap"]}
+      ]
+    },
+    {"kind": "matrix", "name": "target_amplitude", "type": "uint", "bits": 16, "rows": 8, "columns": 8, "role": "amplitude", "visualization": ["heatmap"]},
+    {"kind": "matrix", "name": "target_ambient", "type": "uint", "bits": 16, "rows": 8, "columns": 8, "role": "ambient", "visualization": ["heatmap"]},
+    {"kind": "matrix", "name": "target_dss", "type": "uint", "bits": 4, "rows": 8, "columns": 8, "role": "dss", "visualization": ["heatmap"]},
+    {
+      "kind": "object",
+      "name": "status_line",
+      "fields": [
+        {"kind": "field", "name": "frame_counter", "type": "uint", "bits": 32, "visualization": ["line"], "unit": "frames"},
+        {"kind": "field", "name": "temperature", "type": "int", "bits": 16, "visualization": ["line"], "unit": "°C"},
+        {"kind": "field", "name": "ldd_temperature", "type": "int", "bits": 16, "visualization": ["line"], "unit": "°C"},
+        {"kind": "array", "name": "ldd_power_ch0_n", "type": "uint", "bits": 16, "length": 7, "visualization": ["value"]},
+        {"kind": "array", "name": "ldd_power_ch1_n", "type": "uint", "bits": 16, "length": 7, "visualization": ["value"]},
+        {"kind": "object", "name": "ref_step4_5_ch1", "fields": [
+          {"kind": "field", "name": "amplitude", "type": "uint", "bits": 16, "visualization": ["value"]},
+          {"kind": "field", "name": "distance", "type": "uint", "bits": 16, "visualization": ["value"]}]
+        },
+        {"kind": "object", "name": "ref_step4_5_ch2", "fields": [
+          {"kind": "field", "name": "amplitude", "type": "uint", "bits": 16, "visualization": ["value"]},
+          {"kind": "field", "name": "distance", "type": "uint", "bits": 16, "visualization": ["value"]}]
+        },
+        {"kind": "object", "name": "ref_stepc_ch1", "fields": [
+          {"kind": "field", "name": "amplitude", "type": "uint", "bits": 16, "visualization": ["value"]},
+          {"kind": "field", "name": "distance", "type": "uint", "bits": 16, "visualization": ["value"]}]
+        },
+        {"kind": "object", "name": "ref_stepc_ch2", "fields": [
+          {"kind": "field", "name": "amplitude", "type": "uint", "bits": 16, "visualization": ["value"]},
+          {"kind": "field", "name": "distance", "type": "uint", "bits": 16, "visualization": ["value"]}]
+        },
+        {"kind": "field", "name": "current_frame_width", "type": "uint", "bits": 16, "visualization": ["value"]},
+        {"kind": "field", "name": "current_frame_height", "type": "uint", "bits": 16, "visualization": ["value"]},
+        {"kind": "object", "name": "current_static_settings", "fields": [
+          {"kind": "field", "name": "synchro", "type": "uint", "bits": 2, "visualization": ["value"]},
+          {"kind": "field", "name": "power_mode", "type": "uint", "bits": 2, "visualization": ["value"]},
+          {"kind": "field", "name": "format", "type": "uint", "bits": 2, "visualization": ["value"]},
+          {"kind": "field", "name": "mode", "type": "uint", "bits": 2, "visualization": ["value"]}]
+        },
+        {"kind": "field", "name": "ambient_attenuation", "type": "uint", "bits": 8, "visualization": ["value"]},
+        {"kind": "object", "name": "current_dynamic_settings", "fields": [
+          {"kind": "field", "name": "reserved_dyn", "type": "uint", "bits": 4, "visualization": ["hidden"]},
+          {"kind": "field", "name": "dss_mode", "type": "uint", "bits": 2, "visualization": ["value"]},
+          {"kind": "field", "name": "binning", "type": "uint", "bits": 5, "visualization": ["value"]},
+          {"kind": "field", "name": "context", "type": "bool", "bits": 1, "visualization": ["value"]},
+          {"kind": "field", "name": "step_number", "type": "uint", "bits": 4, "visualization": ["value"]}]
+        },
+        {"kind": "field", "name": "error_code", "type": "uint", "bits": 16, "visualization": ["value"]},
+        {"kind": "field", "name": "error_status", "type": "uint", "bits": 8, "visualization": ["value"]},
+        {"kind": "array", "name": "ldd_error_status", "type": "uint", "bits": 8, "length": 5, "visualization": ["value"]},
+        {"kind": "field", "name": "current_frame_period", "type": "uint", "bits": 32, "visualization": ["value"]},
+        {"kind": "object", "name": "crop_status", "fields": [
+          {"kind": "field", "name": "crop_x_size_stat", "type": "uint", "bits": 6, "visualization": ["value"]},
+          {"kind": "field", "name": "crop_y_size_stat", "type": "uint", "bits": 6, "visualization": ["value"]},
+          {"kind": "field", "name": "crop_x_off_stat", "type": "uint", "bits": 6, "visualization": ["value"]},
+          {"kind": "field", "name": "crop_y_off_stat", "type": "uint", "bits": 6, "visualization": ["value"]},
+          {"kind": "field", "name": "crop_enable", "type": "bool", "bits": 1, "visualization": ["value"]},
+          {"kind": "field", "name": "reserved_crop", "type": "uint", "bits": 7, "visualization": ["hidden"]}]
+        },
+        {"kind": "object", "name": "nb_shot_step_1", "fields": [
+          {"kind": "field", "name": "LSB", "type": "uint", "bits": 8, "visualization": ["value"]},
+          {"kind": "field", "name": "middle", "type": "uint", "bits": 8, "visualization": ["value"]},
+          {"kind": "field", "name": "MSB", "type": "uint", "bits": 8, "visualization": ["value"]}]},
+        {"kind": "object", "name": "nb_shot_step_4_5", "fields": [
+          {"kind": "field", "name": "LSB", "type": "uint", "bits": 8, "visualization": ["value"]},
+          {"kind": "field", "name": "middle", "type": "uint", "bits": 8, "visualization": ["value"]},
+          {"kind": "field", "name": "MSB", "type": "uint", "bits": 8, "visualization": ["value"]}]},
+        {"kind": "object", "name": "nb_shot_step_6", "fields": [
+          {"kind": "field", "name": "LSB", "type": "uint", "bits": 8, "visualization": ["value"]},
+          {"kind": "field", "name": "middle", "type": "uint", "bits": 8, "visualization": ["value"]},
+          {"kind": "field", "name": "MSB", "type": "uint", "bits": 8, "visualization": ["value"]}]},
+        {"kind": "object", "name": "nb_shot_step_7", "fields": [
+          {"kind": "field", "name": "LSB", "type": "uint", "bits": 8, "visualization": ["value"]},
+          {"kind": "field", "name": "middle", "type": "uint", "bits": 8, "visualization": ["value"]},
+          {"kind": "field", "name": "MSB", "type": "uint", "bits": 8, "visualization": ["value"]}]},
+        {"kind": "array", "name": "sest_reserved", "type": "uint", "bits": 32, "length": 3, "visualization": ["hidden"]}
+      ]
+    }
+  ]
+}
